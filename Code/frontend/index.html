@@ -1,0 +1,425 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CardioReport – Clinical Intelligence</title>
+    <meta
+      name="description"
+      content="CardioReport generates clinician-grade RPM intelligence reports from longitudinal vital sign trends."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- TOP NAV                                                       -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <nav id="topnav">
+      <div class="nav-brand">
+        <svg
+          class="nav-logo"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+        >
+          <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+        </svg>
+        <span class="nav-title">CardioReport</span>
+        <span class="nav-badge">Clinical Intelligence</span>
+      </div>
+      <div class="nav-meta">
+        <span class="nav-version">v1.0</span>
+      </div>
+    </nav>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- CONTROLS PANEL                                                -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <section id="controls-panel" class="controls-panel">
+      <div class="controls-inner">
+        <div class="control-group">
+          <label for="patient-select">Patient</label>
+          <select id="patient-select">
+            <option value="">Loading patients…</option>
+          </select>
+        </div>
+        <div class="control-group">
+          <label for="range-select">Time Window</label>
+          <select id="range-select">
+            <option value="last_24h">Last 24 Hours</option>
+            <option value="last_7d">Last 7 Days</option>
+            <option value="last_15d">Last 15 Days</option>
+            <option value="last_1m" selected>Last 1 Month</option>
+            <option value="last_3m">Last 3 Months</option>
+            <option value="custom">Custom Range</option>
+          </select>
+        </div>
+        <div
+          class="control-group custom-range"
+          id="custom-range"
+          style="display: none"
+        >
+          <label for="start-date">Start</label>
+          <input type="date" id="start-date" />
+        </div>
+        <div
+          class="control-group custom-range"
+          id="custom-range-end"
+          style="display: none"
+        >
+          <label for="end-date">End</label>
+          <input type="date" id="end-date" />
+        </div>
+        <div class="control-group ai-toggle-group">
+          <label for="ai-toggle">AI Analysis</label>
+          <label class="toggle-switch">
+            <input type="checkbox" id="ai-toggle">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="control-actions">
+          <button id="btn-smart-week" class="btn btn-smart" disabled title="Auto-detect the most clinically significant 7-day window">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+              <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
+            </svg>
+            Most Critical Week
+          </button>
+          <button id="btn-generate" class="btn btn-primary" disabled>
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              width="16"
+              height="16"
+            >
+              <path
+                d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"
+              />
+            </svg>
+            Generate Report
+          </button>
+          <button id="btn-download" class="btn btn-secondary" disabled>
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              width="16"
+              height="16"
+            >
+              <path
+                d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"
+              />
+            </svg>
+            Download PDF
+          </button>
+          <button id="btn-export-json" class="btn btn-ghost" disabled>
+            Export JSON
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- LOADING STATE                                                 -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <div id="loading-overlay" class="loading-overlay" style="display: none">
+      <div class="loading-content">
+        <div class="loading-spinner"></div>
+        <p class="loading-text">Analyzing vital sign trends…</p>
+        <p class="loading-subtext">
+          Running signal engine & generating narrative
+        </p>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- REPORT PREVIEW                                                -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <main id="report-container" style="display: none">
+      <!-- HEADER -->
+      <section class="report-header" id="report-header">
+        <div class="header-left">
+          <h1 class="report-title">Clinical Intelligence Trend Report</h1>
+          <div class="header-meta">
+            <span id="meta-patient" class="meta-tag"
+              ><strong>Patient:</strong> —</span
+            >
+            <span class="meta-divider">|</span>
+            <span id="meta-period" class="meta-tag"
+              ><strong>Period:</strong> —</span
+            >
+            <span class="meta-divider">|</span>
+            <span id="meta-date" class="meta-tag"
+              ><strong>Report Date:</strong> —</span
+            >
+            <span class="meta-divider">|</span>
+            <span id="meta-resolution" class="meta-tag"
+              ><strong>Resolution:</strong> —</span
+            >
+            <span class="meta-divider">|</span>
+            <span id="meta-coverage" class="meta-tag"
+              ><strong>Coverage:</strong> —</span
+            >
+          </div>
+          <p class="disclaimer" id="disclaimer"></p>
+        </div>
+        <div class="header-right">
+          <div class="triage-badge" id="triage-badge">GREEN</div>
+          <div class="priority-badge" id="priority-badge">LOW</div>
+        </div>
+      </section>
+
+      <!-- QUALITY WARNINGS BANNER -->
+      <section class="quality-warnings" id="quality-warnings" style="display: none">
+        <div class="warning-icon">⚠️</div>
+        <div class="warning-text" id="warning-text"></div>
+      </section>
+
+      <!-- STATUS TIMELINE -->
+      <section class="report-card phase-timeline" id="phase-timeline" style="display: none">
+        <h2 class="section-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+          </svg>
+          Patient's Clinical Status Over the Period
+        </h2>
+        <div class="phases-container" id="phases-container"></div>
+      </section>
+
+      <!-- SECTION 1: NARRATIVE -->
+      <section class="report-card" id="section-narrative">
+        <h2 class="section-title">
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            width="18"
+            height="18"
+          >
+            <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+            <path d="M14 2v6h6M16 13H8M16 17H8M10 9H8" />
+          </svg>
+          Clinical Intelligence: Signal Summary
+        </h2>
+        <p class="narrative-text" id="narrative-text"></p>
+        <div class="actions-section" id="actions-section">
+          <h3 class="actions-title">Suggested Clinical Review Actions</h3>
+          <ul id="actions-list" class="actions-list"></ul>
+        </div>
+        <div class="narrative-source-label" id="narrative-source-label" style="display:none"></div>
+      </section>
+
+      <!-- SECTION 2: EPISODES TABLE -->
+      <section class="report-card" id="section-episodes">
+        <h2 class="section-title">
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            width="18"
+            height="18"
+          >
+            <path
+              d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"
+            />
+            <line x1="12" y1="9" x2="12" y2="13" />
+            <line x1="12" y1="17" x2="12.01" y2="17" />
+          </svg>
+          High Priority Episodic Events
+        </h2>
+        <div class="table-wrapper">
+          <table id="episodes-table" class="clinical-table">
+            <thead>
+              <tr>
+                <th>Event Type</th>
+                <th>Date / Time Window</th>
+                <th>Duration</th>
+                <th>N/D</th>
+                <th>HR</th>
+                <th>RR</th>
+                <th>Comments</th>
+              </tr>
+            </thead>
+            <tbody id="episodes-tbody"></tbody>
+          </table>
+        </div>
+        <p id="no-episodes" class="no-data" style="display: none">
+          No significant episodic events detected in the selected time window.
+        </p>
+      </section>
+
+      <!-- SECTION 3: STATS + CHART -->
+      <section class="report-card" id="section-context">
+        <h2 class="section-title">
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            width="18"
+            height="18"
+          >
+            <rect x="18" y="3" width="4" height="18" rx="2" />
+            <rect x="10" y="8" width="4" height="13" rx="2" />
+            <rect x="2" y="13" width="4" height="8" rx="2" />
+          </svg>
+          Heart Rate and Breathing Rate Statistics
+        </h2>
+        <div class="stats-panel">
+          <table class="stats-table" id="stats-table">
+            <thead>
+              <tr>
+                <th>Metric</th>
+                <th>Mean</th>
+                <th>Min</th>
+                <th>Max</th>
+                <th>P5</th>
+                <th>P95</th>
+              </tr>
+            </thead>
+            <tbody id="stats-tbody"></tbody>
+          </table>
+
+          <!-- NEW: Positional Stats (hidden for bed-only reports) -->
+          <div id="positional-section" style="display: none; margin-top: 24px">
+            <h3 class="stats-subtitle" style="font-size: 0.9rem; font-weight: 700; color: var(--brand-blue); margin-bottom: 8px">Positional Vital Sign Comparison</h3>
+            <table class="stats-table" id="positional-table">
+              <thead>
+                <tr>
+                  <th>Location</th>
+                  <th>Avg HR (bpm)</th>
+                  <th>Avg RR (breaths/min)</th>
+                  <th>Hours Recorded</th>
+                </tr>
+              </thead>
+              <tbody id="positional-tbody"></tbody>
+            </table>
+            <p id="positional-summary" class="caption" style="margin-top: 8px; font-style: italic; color: var(--text-muted); font-size: 0.8rem;"></p>
+          </div>
+
+          <!-- NEW: Bed Activity Summary (shown for bed sensor reports) -->
+          <div id="bed-summary-section" style="display: none; margin-top: 24px">
+            <h3 class="stats-subtitle bed-summary-title">Bed Time Activity Summary</h3>
+            <table class="stats-table" id="bed-summary-table">
+              <thead>
+                <tr>
+                  <th>Metric</th>
+                  <th>Value</th>
+                </tr>
+              </thead>
+              <tbody id="bed-summary-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- SECTION 4: CHARTS -->
+      <section class="report-card" id="section-charts">
+        <h2 class="section-title">
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            width="18"
+            height="18"
+          >
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+          </svg>
+          Visual Trend Analysis
+        </h2>
+        <div class="chart-panel">
+          <img
+            id="bed-hours-chart-image"
+            class="chart-image"
+            alt="Daily bed time activity chart"
+            src=""
+            style="display:none"
+          />
+          <img
+            id="chart-image"
+            class="chart-image"
+            alt="Daily vital sign trends"
+            src=""
+            style="display:none"
+          />
+          <img
+            id="histogram-image"
+            class="chart-image"
+            alt="HR/RR distribution histogram"
+            src=""
+            style="display:none; margin-top: 16px"
+          />
+          <img
+            id="positional-chart-image"
+            class="chart-image"
+            alt="Positional comparison chart"
+            src=""
+            style="display:none; margin-top: 16px"
+          />
+          <img
+            id="activity-chart-image"
+            class="chart-image"
+            alt="Activity trend chart"
+            src=""
+            style="display:none; margin-top: 16px"
+          />
+        </div>
+      </section>
+
+      <!-- SECTION 4: TREND ASSESSMENT -->
+      <section class="trend-assessment-bar" id="section-trend">
+        <div class="trend-left">
+          <span class="trend-label">Trend Assessment:</span>
+          <span class="trend-value" id="trend-value">Stable</span>
+        </div>
+        <div class="trend-right">
+          <span class="trend-label">Action Posture:</span>
+          <span class="trend-value" id="posture-value">Routine review</span>
+        </div>
+      </section>
+
+      <!-- FOOTER -->
+      <footer class="report-footer" id="report-footer">
+        <span id="footer-quality"></span>
+        <span>Generated by CardioReport v1.0</span>
+      </footer>
+    </main>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- EMPTY STATE                                                   -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <div id="empty-state" class="empty-state">
+      <div class="empty-content">
+        <svg
+          class="empty-icon"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+        >
+          <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+        </svg>
+        <h2>Welcome to CardioReport</h2>
+        <p>
+          Select a patient and time window, then click
+          <strong>Generate Report</strong> to produce a clinical intelligence
+          trend report.
+        </p>
+      </div>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>

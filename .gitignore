@@ -1,0 +1,28 @@
+# Secrets
+.env
+.env.*
+*.key
+credentials.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# macOS
+.DS_Store
+
+# Claude Code per-machine settings
+.claude/
+
+# Editors
+.vscode/
+.idea/
+
+# Build artifacts
+build/
+dist/

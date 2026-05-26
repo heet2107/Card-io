@@ -1,0 +1,7 @@
+thresholds:
+  # Defaults (adult-oriented) — tune per patient baseline, diagnosis, and meds
+  brady_hr_avg: 50
+  severe_brady_hr_min: 45
+  tachy_hr_avg: 100
+  tachy_rr_avg: 24
+  low_cnt: 30
