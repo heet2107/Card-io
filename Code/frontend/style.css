@@ -760,6 +760,8 @@ input:focus + .slider {
   gap: 2px;
   border-radius: var(--radius-md);
   overflow: hidden;
+  background: var(--gray-100);
+  padding: 2px;
 }
 
 .phase-block {
@@ -768,7 +770,8 @@ input:focus + .slider {
   text-align: center;
   font-size: 0.72rem;
   font-weight: 600;
-  color: white;
+  background: white;
+  color: var(--gray-800);
   min-width: 80px;
   transition: transform 0.2s ease;
 }
@@ -777,22 +780,57 @@ input:focus + .slider {
   transform: scaleY(1.05);
 }
 
-.phase-block.stable {
+.phase-block.stable,
+.phase-block.normal {
   background: linear-gradient(135deg, var(--green-500), #059669);
+  color: white;
+}
+
+.phase-block.very_low_hr {
+  background: linear-gradient(135deg, #8B0000, #5F0000);
+  color: white;
 }
 
 .phase-block.low_hr {
-  background: linear-gradient(135deg, var(--brand-500), var(--brand-700));
+  background: linear-gradient(135deg, #E57373, #C62828);
+  color: white;
+}
+
+.phase-block.elevated_hr {
+  background: linear-gradient(135deg, #FFB300, #FF8F00);
+  color: var(--gray-900);
 }
 
 .phase-block.high_hr {
-  background: linear-gradient(135deg, var(--red-500), var(--red-700));
+  background: linear-gradient(135deg, #F4511E, #D84315);
+  color: white;
+}
+
+.phase-block.very_high_hr {
+  background: linear-gradient(135deg, #B71C1C, #7F0000);
+  color: white;
+}
+
+.phase-block.elevated_rr {
+  background: linear-gradient(135deg, #90CAF9, #42A5F5);
+  color: var(--gray-900);
+}
+
+.phase-block.high_rr {
+  background: linear-gradient(135deg, #1976D2, #0D47A1);
+  color: white;
+}
+
+.phase-block.very_high_rr {
+  background: linear-gradient(135deg, #0D47A1, #002171);
+  color: white;
 }
 
 .phase-block.mixed,
 .phase-block.mixed_low,
 .phase-block.mixed_high {
   background: linear-gradient(135deg, var(--amber-500), var(--amber-700));
+  color: white;
 }
 
 .phase-label {
