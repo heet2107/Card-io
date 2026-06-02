@@ -194,7 +194,8 @@ def test_threshold_cascade():
     print(f"  Trend:     {trend}")
     print(f"  Phases:    {len(phases)}")
     print(f"  Priority:  {priority}")
-    print(f"  Narrative: {narrative[:80]}...")
+    narrative_str = str(narrative) if isinstance(narrative, dict) else (narrative or "")
+    print(f"  Narrative: {narrative_str[:80]}...")
 
     # Verify no hardcoded "50" or "100" appear in comments that should come from config
     hardcoded_leaks = []

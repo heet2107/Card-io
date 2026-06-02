@@ -68,6 +68,15 @@ app.add_middleware(
 _report_cache: TTLCache = TTLCache(maxsize=64, ttl=300)  # 5 min TTL
 
 
+def resolve_patient_id(patient_id: str) -> str:
+    """Resolve raw patient/device IDs (like 934297-0122 or 934297-0134) to friendly display names."""
+    if patient_id == "934297-0122":
+        return "S (Chair)"
+    if patient_id == "934297-0134":
+        return "S (Bed)"
+    return patient_id
+
+
 def _cache_key(req: ReportRequest) -> str:
     raw = f"{req.patient_id}|{req.range_type}|{req.start}|{req.end}|{req.use_ai}"
     return hashlib.md5(raw.encode()).hexdigest()
@@ -97,6 +106,7 @@ async def _run_pipeline(req: ReportRequest) -> tuple[dict, "pd.DataFrame"]:
     from .models import Phase
 
     # ── Step 1: Look up patient ──────────────────────────────────────────
+    req.patient_id = resolve_patient_id(req.patient_id)
     all_data = load_vitals()
     if req.patient_id not in all_data:
         raise HTTPException(status_code=404, detail=f"Patient '{req.patient_id}' not found.")
@@ -400,6 +410,7 @@ async def patient_locations(patient_id: str):
     Enables the frontend to intelligently disable unavailable report types.
     """
     try:
+        patient_id = resolve_patient_id(patient_id)
         meta = get_patient_metadata(patient_id)
         if not meta["locations"]:
             raise HTTPException(status_code=404, detail=f"Patient '{patient_id}' not found or has no data.")
@@ -419,6 +430,7 @@ async def interesting_week(patient_id: str):
     """
     from .window_intelligence import find_most_interesting_week
 
+    patient_id = resolve_patient_id(patient_id)
     all_data = load_vitals()
     if patient_id not in all_data:
         raise HTTPException(status_code=404, detail=f"Patient '{patient_id}' not found.")
@@ -434,6 +446,7 @@ async def interesting_week(patient_id: str):
 @app.post("/api/report/preview")
 async def report_preview(req: ReportRequest):
     """Generate and return the report as JSON for web preview."""
+    req.patient_id = resolve_patient_id(req.patient_id)
     key = _cache_key(req)
     if key in _report_cache:
         return _report_cache[key]
@@ -448,6 +461,7 @@ async def report_preview(req: ReportRequest):
 @app.post("/api/report/pdf")
 async def report_pdf(req: ReportRequest):
     """Generate and return the PDF report."""
+    req.patient_id = resolve_patient_id(req.patient_id)
     from .pdf_render import _v
     report_obj, df = await _run_pipeline(req)
 
@@ -469,6 +483,7 @@ async def report_pdf(req: ReportRequest):
 @app.get("/api/report/events.json")
 async def export_events(patient_id: str, range_type: Literal["last_24h", "last_7d", "last_15d", "last_1m", "last_3m", "custom", "smart_week"] = "last_3m",                        start: Optional[str] = None, end: Optional[str] = None):
     """Export detected episodes as JSON."""
+    patient_id = resolve_patient_id(patient_id)
     req = ReportRequest(patient_id=patient_id, range_type=range_type,
                         start=start, end=end)
     report, _ = await _run_pipeline(req)
