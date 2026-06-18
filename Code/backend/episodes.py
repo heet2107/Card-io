@@ -81,6 +81,14 @@ def detect_episodes(df: pd.DataFrame) -> list[Episode]:
             "hr_max": row.get("hr_max", row["hr_avg"]),
             "rr_min": row.get("rr_min", row["rr_avg"]),
             "rr_max": row.get("rr_max", row["rr_avg"]),
+            # R26 Fix 3 — running sum/count of the episode's OWN hourly means,
+            # so the finalized episode average is the true mean over its hours
+            # (replaces the prior biased pairwise (a+b)/2 merge). NaN hours are
+            # excluded from the count.
+            "_hr_sum": float(row["hr_avg"]) if pd.notna(row["hr_avg"]) else 0.0,
+            "_hr_n":   1 if pd.notna(row["hr_avg"]) else 0,
+            "_rr_sum": float(row["rr_avg"]) if pd.notna(row["rr_avg"]) else 0.0,
+            "_rr_n":   1 if pd.notna(row["rr_avg"]) else 0,
         })
 
     # Stage 1: Hourly Violation Detection
@@ -130,8 +138,11 @@ def detect_episodes(df: pd.DataFrame) -> list[Episode]:
                 # Merge
                 curr["end_time"] = nxt["end_time"]
                 curr["duration_hours"] = int((pd.Timestamp(curr["end_time"]) - pd.Timestamp(curr["start_time"])).total_seconds() / 3600) + 1
-                curr["hr_avg"] = (curr["hr_avg"] + nxt["hr_avg"]) / 2
-                curr["rr_avg"] = (curr["rr_avg"] + nxt["rr_avg"]) / 2
+                # R26 Fix 3 — accumulate true mean over all merged hours.
+                curr["_hr_sum"] += nxt["_hr_sum"]; curr["_hr_n"] += nxt["_hr_n"]
+                curr["_rr_sum"] += nxt["_rr_sum"]; curr["_rr_n"] += nxt["_rr_n"]
+                curr["hr_avg"] = (curr["_hr_sum"] / curr["_hr_n"]) if curr["_hr_n"] else float("nan")
+                curr["rr_avg"] = (curr["_rr_sum"] / curr["_rr_n"]) if curr["_rr_n"] else float("nan")
                 curr["hr_min"] = min(curr["hr_min"], nxt["hr_min"])
                 curr["hr_max"] = max(curr["hr_max"], nxt["hr_max"])
                 curr["rr_min"] = min(curr["rr_min"], nxt["rr_min"])
@@ -176,14 +187,32 @@ def detect_episodes(df: pd.DataFrame) -> list[Episode]:
         
         # Format key vitals string — always include both for context
         # Format key vitals string — consistent format for HR and RR
-        hr_min_val = round(ep_dict.get('hr_min', ep_dict['hr_avg']))
-        hr_max_val = round(ep_dict.get('hr_max', ep_dict['hr_avg']))
-        rr_min_val = round(ep_dict.get('rr_min', ep_dict['rr_avg']))
-        rr_max_val = round(ep_dict.get('rr_max', ep_dict['rr_avg']))
+        # NaN-safe: an HR-absent (RR-only) or RR-absent episode has all-NaN
+        # aggregates on that side; round(NaN) raises. Finite values format
+        # exactly as before — this only changes the previously-crashing path.
+        def _kv(v):
+            try:
+                return str(round(v)) if v is not None and not pd.isna(v) else "n/a"
+            except (TypeError, ValueError):
+                return "n/a"
+
+        # R26 Fix 3 — structured true-mean fields for the events-table Average
+        # column. None when the metric was absent for the whole episode.
+        def _num(v):
+            return float(v) if v is not None and not pd.isna(v) else None
+        ep_avg_hr = _num(ep_dict.get('hr_avg'))
+        ep_avg_rr = _num(ep_dict.get('rr_avg'))
+
+        hr_avg_val = _kv(ep_dict.get('hr_avg'))
+        hr_min_val = _kv(ep_dict.get('hr_min', ep_dict.get('hr_avg')))
+        hr_max_val = _kv(ep_dict.get('hr_max', ep_dict.get('hr_avg')))
+        rr_avg_val = _kv(ep_dict.get('rr_avg'))
+        rr_min_val = _kv(ep_dict.get('rr_min', ep_dict.get('rr_avg')))
+        rr_max_val = _kv(ep_dict.get('rr_max', ep_dict.get('rr_avg')))
 
         kv = (
-            f"HR avg {round(ep_dict['hr_avg'])} / min {hr_min_val} / max {hr_max_val} | "
-            f"RR avg {round(ep_dict['rr_avg'])} / min {rr_min_val} / max {rr_max_val}"
+            f"HR avg {hr_avg_val} / min {hr_min_val} / max {hr_max_val} | "
+            f"RR avg {rr_avg_val} / min {rr_min_val} / max {rr_max_val}"
         )
 
         final_episodes.append(Episode(
@@ -197,7 +226,9 @@ def detect_episodes(df: pd.DataFrame) -> list[Episode]:
             severity_score=score,
             severity_band=band,
             concern_phrase=SEVERITY_BAND_PHRASES.get(band, ""),
-            qualifier_phrase="Clinical coupling: low HR + elevated RR" if ep_dict["cooccurrence"] else ""
+            qualifier_phrase="Clinical coupling: low HR + elevated RR" if ep_dict["cooccurrence"] else "",
+            avg_hr=ep_avg_hr,
+            avg_rr=ep_avg_rr,
         ))
 
     # Sort: Severity descending, then Chronological

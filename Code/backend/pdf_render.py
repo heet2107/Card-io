@@ -1568,11 +1568,13 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
 
         coverage_pct_val = ""
         try:
+            # R26 Fix 5 — read the canonical coverage value (single source); do
+            # not recompute total/expected here (that produced the 92% vs the
+            # meta-line's 90.1%). Round identically to the other surfaces.
             dq = _v(report, 'data_quality', None)
-            recorded_h = _v(dq, 'total_hours', None)
-            expected_h = _v(dq, 'expected_hours', None)
-            if recorded_h is not None and expected_h:
-                coverage_pct_val = f"{int(round(min(100.0, 100.0 * recorded_h / expected_h)))}%"
+            cov = _v(dq, 'coverage_pct', None)
+            if cov is not None:
+                coverage_pct_val = f"{int(round(cov))}%"
         except Exception:
             coverage_pct_val = ""
         if not coverage_pct_val:
@@ -1628,6 +1630,7 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
             min_hr=_v(hr_summ, 'min', None),
             rr_avg=scoped_rr_avg if scoped_rr_avg is not None else _v(rr_summ, 'mean', None),
             peak_rr=_v(rr_summ, 'max', None),
+            end_of_period=_v(report, 'end_of_period', None),
         )
         elements.append(Paragraph(
             f"<b>Major Findings:</b> {findings_text}",
@@ -1635,6 +1638,11 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
         ))
 
         phase_table_rows = _v(narrative, 'phase_table_rows', [])
+        # Default for the no-events-table case: 0 rows means the page-1 legends
+        # below (line ~1977) place normally (<=3 branch). Without this default,
+        # a report with episodes but no displayable phase rows raised
+        # UnboundLocalError on num_events_table_rows.
+        num_events_table_rows = 0
         if phase_table_rows:
             elements.append(Spacer(1, 6))
             # Round 10 Fix 3: Two clear duration columns

@@ -30,6 +30,7 @@ from backend.signal_engine import (
     compute_data_quality, compute_data_resolution,
     compute_triage, compute_trend_assessment, compute_action_posture,
     compute_positional_stats, compute_activity_data,
+    compute_end_of_period_clustering,
 )
 from backend.episodes import detect_episodes, compute_rollups
 from backend.narrative_ai import generate_narrative
@@ -75,8 +76,10 @@ def _coverage_summary(data_quality, positional_stats) -> str:
             parts.append(f"{row.location}: {row.hours}/{expected_h}h ({loc_pct}%)")
         return "  |  ".join(parts)
     else:
-        capped_pct = min(data_quality.quality_pct, 100.0)
-        return f"{data_quality.total_hours}/{data_quality.expected_hours}h ({capped_pct}%)"
+        # R26 Fix 5 — single canonical coverage value, integer-rounded so the
+        # meta-line, events-table header, and batch summary all read the same %.
+        pct = int(round(data_quality.coverage_pct))
+        return f"{data_quality.total_hours}/{data_quality.expected_hours}h ({pct}%)"
 
 
 # ── Single report generator ───────────────────────────────────────────────────
@@ -86,7 +89,8 @@ async def generate_one(patient_id: str, range_type: str,
                         all_data: dict,
                         one_page_only: bool = False,
                         report_label: str = "",
-                        is_fallback_90d: bool = False) -> dict | None:
+                        is_fallback_90d: bool = False,
+                        allow_low_coverage: bool = False) -> dict | None:
     """
     Run the full pipeline for one patient+window.
     Returns a result dict (for the summary table) or None on failure.
@@ -112,7 +116,8 @@ async def generate_one(patient_id: str, range_type: str,
     window_start    = window_start_ts.strftime("%Y-%m-%d")
     window_end      = window_end_ts.strftime("%Y-%m-%d")
 
-    gate = run_quality_gates(df, window_start_ts, window_end_ts)
+    gate = run_quality_gates(df, window_start_ts, window_end_ts,
+                             downgrade_coverage_reject=allow_low_coverage)
     if not gate["can_generate"]:
         print(f"    WARN: Quality gate rejected {patient_id}: {gate['reason']}")
         return None
@@ -124,6 +129,10 @@ async def generate_one(patient_id: str, range_type: str,
 
     episodes = detect_episodes(df)
     rollups  = compute_rollups(episodes, df)
+
+    # R26 Fix 4 — end-of-period clustering (replaces bare "Stable baseline" when
+    # episodic activity is concentrated in the final portion of the window).
+    end_of_period = compute_end_of_period_clustering(episodes, window_start_ts, window_end_ts)
 
     triage         = compute_triage(episodes, rollups.coupled_fraction, df=df)
     trend, _       = compute_trend_assessment(df, episodes)
@@ -200,6 +209,8 @@ async def generate_one(patient_id: str, range_type: str,
         # (header note for fallback) and trajectory selection (90DayPeriod path).
         "report_label": report_label,
         "is_fallback_90d": is_fallback_90d,
+        # R26 Fix 4 — end-of-period clustering signal for the Major Findings line.
+        "end_of_period": end_of_period,
     }
 
     # FIX 35: Compute trajectory comparison
@@ -338,6 +349,10 @@ async def generate_one(patient_id: str, range_type: str,
         "episodes":      len(episodes),
         "coupled":       "Yes" if rollups.coupled_fraction > 0 else "No",
         "coverage":      coverage,
+        "quality_warnings": gate["warnings"],
+        # R26 Fix 5 — canonical coverage value so the batch summary cell reads
+        # the same number as the per-patient events-table header.
+        "coverage_pct":  data_quality.coverage_pct,
         "hr_avg":        hr_stats.mean,
         "rr_avg":        rr_stats.mean,
         "sensor_type":   sensor_type,
@@ -357,6 +372,8 @@ async def generate_one(patient_id: str, range_type: str,
         # R23.A: condition-window means for the Comments column.
         "findings_hr_avg": findings_hr_avg,
         "findings_rr_avg": findings_rr_avg,
+        # R26 Fix 4: end-of-period clustering for the Comments column.
+        "end_of_period": end_of_period,
     }
 
 
@@ -435,8 +452,18 @@ def find_critical_week(df: pd.DataFrame, episodes: list) -> tuple[str, str]:
 
 # ── Summary PDF builder ───────────────────────────────────────────────────────
 
-def build_summary_pdf(results: list[dict]) -> bytes:
-    """Generate a single-page master summary table PDF (report #21)."""
+def build_summary_pdf(results: list[dict],
+                      patient_order: list[str] | None = None,
+                      per_patient_report_label: str | None = "FullPeriod",
+                      title: str = "CardioReport — Batch Study Summary") -> bytes:
+    """Generate a single-page master summary table PDF (report #21).
+
+    ``patient_order`` is the roster used for the per-patient triage distribution
+    footer; it defaults to the PAM Health ``PATIENT_ORDER``. ``per_patient_report_label``
+    selects which report defines each patient's headline triage — when ``None``
+    (used by cohorts like MedHab that have no single FullPeriod row), the most
+    severe triage across that patient's rows is used instead.
+    """
     import io, html as _html
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import letter
@@ -493,7 +520,7 @@ def build_summary_pdf(results: list[dict]) -> bytes:
     # below the 30% gate). Was hardcoded "10-Patient Study | 20 individual reports".
     unique_patients = len({r["patient_id"] for r in results if r})
     total_reports = sum(1 for r in results if r)
-    elems.append(Paragraph("CardioReport — Batch Study Summary", ttl))
+    elems.append(Paragraph(title, ttl))
     elems.append(Paragraph(
         f"{unique_patients}-Patient Study  |  Generated {now}  |  "
         f"{total_reports} individual reports + this summary", sub
@@ -578,7 +605,13 @@ def build_summary_pdf(results: list[dict]) -> bytes:
         # review; the hour totals are still computed for the % calc.
         bed_h = res.get("bed_hours", 0)
         exp_h = res.get("expected_hours", 1)
-        cov_pct = min(bed_h / max(exp_h, 1) * 100, 100.0)
+        # R26 Fix 5 — single-sensor patients read the canonical coverage value
+        # (identical to the events-table header); multi-sensor keep the
+        # deliberate bed-only coverage split.
+        if res.get("sensor_type") != "bed+chair" and res.get("coverage_pct") is not None:
+            cov_pct = res["coverage_pct"]
+        else:
+            cov_pct = min(bed_h / max(exp_h, 1) * 100, 100.0)
         bed_days = max(1, round(bed_h / 24)) if bed_h > 0 else 0
         exp_days = max(1, round(exp_h / 24))
         coverage_cell = settings.batch_summary_coverage_format.format(
@@ -609,12 +642,17 @@ def build_summary_pdf(results: list[dict]) -> bytes:
         #     Yellow rows remain unbolded.
         comments = ""
         pid = res["patient_id"]
+        # R26 Fix 4 — end-of-period clustering overrides bare "Stable baseline".
+        from backend.batch_summary import _end_of_period_text
+        eop_text = _end_of_period_text(res.get("end_of_period"))
         if triage == "Green":
-            comments = comment_templates.get("stable", "Stable baseline")
+            comments = eop_text or comment_templates.get("stable", "Stable baseline")
         else:
             dominant_phase = res.get("dominant_phase_type")
             tmpl = comment_templates.get(dominant_phase) if dominant_phase else None
-            if tmpl:
+            if not tmpl and eop_text:
+                comments = eop_text
+            elif tmpl:
                 # R23.A — avg_hr / avg_rr use condition-window scoped means when
                 # available so the parenthetical agrees with the "Sustained [tier]"
                 # parent. Fall back to overall mean only when the scoped value is
@@ -671,15 +709,26 @@ def build_summary_pdf(results: list[dict]) -> bytes:
     yellow_n = sum(1 for r in results if r and r["triage"] == "Yellow")
     green_n  = sum(1 for r in results if r and r["triage"] == "Green")
     
-    # Triage counts (Per Patient - defined by Full Period triage)
-    p_triage = {}
-    for _, p in PATIENT_ORDER:
-        p_triage[p] = "Skipped"  # default if no reports generated
-        
+    # Triage counts (Per Patient). PAM Health defines a patient's headline triage
+    # by the FullPeriod row; cohorts without one (per_patient_report_label=None,
+    # e.g. MedHab) fall back to the most severe triage across the patient's rows.
+    roster = patient_order if patient_order is not None else [p for _, p in PATIENT_ORDER]
+    p_triage = {p: "Skipped" for p in roster}  # default if no reports generated
+
+    _severity_rank = {"Green": 0, "Yellow": 1, "Red": 2}
     for r in results:
-        if r and r.get("file_label") == "FullPeriod":
-            p_triage[r["patient_id"]] = r["triage"]
-            
+        if not r:
+            continue
+        pid = r["patient_id"]
+        if pid not in p_triage:
+            continue
+        if per_patient_report_label is None:
+            cur = p_triage[pid]
+            if cur == "Skipped" or _severity_rank.get(r["triage"], -1) > _severity_rank.get(cur, -1):
+                p_triage[pid] = r["triage"]
+        elif r.get("file_label") == per_patient_report_label:
+            p_triage[pid] = r["triage"]
+
     p_red = sum(1 for v in p_triage.values() if v == "Red")
     p_yel = sum(1 for v in p_triage.values() if v == "Yellow")
     p_grn = sum(1 for v in p_triage.values() if v == "Green")

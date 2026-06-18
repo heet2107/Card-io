@@ -112,10 +112,24 @@ def run_quality_gates(
     df: pd.DataFrame,
     window_start: pd.Timestamp,
     window_end: pd.Timestamp,
+    downgrade_coverage_reject: bool = False,
 ) -> dict:
-    """Run all 5 gates and return a consolidated result."""
+    """Run all 5 gates and return a consolidated result.
+
+    ``downgrade_coverage_reject`` (default False → unchanged PAM Health
+    behaviour) turns a *coverage* REJECT into a WARN. It is opt-in for cohorts
+    whose reports explicitly cover "all available data" for a partial period
+    (e.g. MedHab month reports), where genuinely-sparse months should surface a
+    low-coverage badge rather than be skipped. Only the coverage gate is
+    affected — the minimum-substantive-days floor (Gate 2) still hard-rejects
+    truly thin windows, so this is not a blanket bypass.
+    """
+    coverage_status, coverage_msg = validate_coverage(df, window_start, window_end)
+    if (downgrade_coverage_reject and coverage_status == GateStatus.REJECT):
+        coverage_status = GateStatus.WARN
+
     gates = [
-        validate_coverage(df, window_start, window_end),
+        (coverage_status, coverage_msg),
         validate_days(df),
         validate_confidence(df),
         validate_ranges(df),

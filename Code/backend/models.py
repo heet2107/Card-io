@@ -55,7 +55,13 @@ class DataQuality(BaseModel):
     gap_hours: int
     expected_hours: int
     total_hours: int
-    quality_pct: float  # (total - low_conf) / expected * 100
+    quality_pct: float  # (total - low_conf) / expected * 100 — confidence-adjusted
+    # R26 Fix 5 — the single canonical coverage value: recorded / expected,
+    # computed once here and read identically by every surface (meta-line,
+    # events-table header, batch summary). The 90.1% vs 92% split came from two
+    # surfaces measuring different things both labelled "Coverage"; this is the
+    # one number all of them now consume.
+    coverage_pct: float = 0  # round(100 * total / expected, 1), capped at 100
 
 
 class Episode(BaseModel):
@@ -70,6 +76,12 @@ class Episode(BaseModel):
     severity_band: str = "S0"
     concern_phrase: str = ""
     qualifier_phrase: str = ""
+    # R26 Fix 3 — true mean vital during this episode's own hours (not the day
+    # or phase baseline). Drives the events-table Average column. None when the
+    # metric was absent for every hour of the episode (e.g. HR on an RR-only
+    # episode).
+    avg_hr: Optional[float] = None
+    avg_rr: Optional[float] = None
 
 
 class EpisodeRollups(BaseModel):

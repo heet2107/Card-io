@@ -55,6 +55,19 @@ def _rr_for_display(value: Optional[float]) -> str:
         return ""
 
 
+def _end_of_period_text(end_of_period: Optional[dict]) -> Optional[str]:
+    """R26 Fix 4 — render the end-of-period clustering headline, or None when the
+    patient is not end-loaded. Used to replace a bare "Stable baseline"."""
+    if not end_of_period:
+        return None
+    from .config import END_OF_PERIOD_TEMPLATE
+    return END_OF_PERIOD_TEMPLATE.format(
+        condition=end_of_period.get("condition", "episodic"),
+        date_range=end_of_period.get("date_range", ""),
+        eps_per_day=end_of_period.get("eps_per_day", ""),
+    )
+
+
 def build_findings_text(
     triage: str,
     dominant_phase_type: Optional[str],
@@ -64,6 +77,7 @@ def build_findings_text(
     min_hr: Optional[float] = None,
     rr_avg: Optional[float] = None,
     peak_rr: Optional[float] = None,
+    end_of_period: Optional[dict] = None,
 ) -> str:
     """R22.D — single template-driven findings string.
 
@@ -71,16 +85,23 @@ def build_findings_text(
     block on the individual report and the cohort cell agree (no manual
     narrative). Shared here to avoid drift between the two surfaces — see
     Heet's "cross-surface count parity" note.
+
+    R26 Fix 4 — a patient whose episodes cluster in the final window portion
+    (``end_of_period`` present) never renders bare "Stable baseline"; the
+    end-of-period clustering headline is surfaced instead.
     """
     from .config import settings
 
     templates = settings.batch_summary_comment_templates
+
+    eop = _end_of_period_text(end_of_period)
     if str(triage).lower() == "green":
-        return templates.get("stable", "Stable baseline").replace("<br/>", " ")
+        # End-of-period clustering overrides the bare "Stable baseline".
+        return eop or templates.get("stable", "Stable baseline").replace("<br/>", " ")
 
     tmpl = templates.get(dominant_phase_type) if dominant_phase_type else None
     if not tmpl:
-        return templates.get("stable", "Stable baseline").replace("<br/>", " ")
+        return eop or templates.get("stable", "Stable baseline").replace("<br/>", " ")
 
     rendered = tmpl.format(
         avg_hr=int(round(hr_avg)) if hr_avg is not None else 0,

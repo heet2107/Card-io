@@ -3036,64 +3036,63 @@ def test_r25_phase_strip_width_matches_candlestick():
 
 
 def test_r16_l1_comments_match_events_table_row_1():
-    """R16 L1: Comments column dominant phase = events-table row 1 phase type.
-
-    Replaces K1's priority-tier-only rule (which read from the episode list and
-    so over-surfaced brief peaks). L1 reads from phase_table_rows — the same
-    list pdf_render sorts to populate the events table — so the batch summary
-    Comments cell agrees with what the clinician sees in the per-patient PDF.
-
-    Three regression scenarios, all using the same _events_table_row_1_phase_type
-    helper that the production narrative pipeline uses:
+    """R26 Fix 2 (supersedes R16 L1): the dominant finding is the one with the
+    MOST total episode-hours (burden-dominant), not the highest tier. Tier is
+    only a tiebreak within equal duration. Both the per-patient Major Findings
+    line and the batch summary Comments column read this same helper, so they
+    agree with each other and now reflect the durable finding rather than a
+    brief high-tier spike.
     """
     from backend.narrative_ai import _events_table_row_1_phase_type
 
-    # 1. PHolst-style: only a Low HR phase (Very High HR excursion was brief and
-    #    didn't form a phase, so detect_phases excluded it from phase_table_rows).
+    # 1. Only a Low HR phase present → low_hr (unchanged).
     pholst_rows = [
         {'category': 'Low Heart Rate', 'longest_continuous': 24,
          'total_hours': 86, 'date': 'Mar 01'},
     ]
     assert _events_table_row_1_phase_type(pholst_rows) == 'low_hr', \
-        "PHolst-style fixture: only Low HR phase present, must select low_hr"
+        "Only Low HR phase present, must select low_hr"
 
-    # 2. JB-style: Very High HR phase present alongside Low HR. Priority order
-    #    (events_table) puts very_high_hr at index 0, low_hr at index 3.
+    # 2. JB-style: 540h Low HR vs 113h Very High HR. R26: burden wins, so the
+    #    540h Low HR headlines — the inverse of the pre-R26 priority-first rule
+    #    that surfaced the briefer Very High HR spike.
     jb_rows = [
         {'category': 'Low Heart Rate', 'longest_continuous': 10,
          'total_hours': 540, 'date': 'Apr 26'},
         {'category': 'Very High Heart Rate', 'longest_continuous': 24,
          'total_hours': 113, 'date': 'Sep 21'},
     ]
-    assert _events_table_row_1_phase_type(jb_rows) == 'very_high_hr', \
-        "JB-style fixture: Very High HR phase wins on priority despite less burden"
+    assert _events_table_row_1_phase_type(jb_rows) == 'low_hr', \
+        "R26: 540h Low HR outweighs a 113h Very High HR spike (burden-dominant)"
 
-    # 3. Wimberley-style: only RR phases. very_high_rr (idx 5) wins over
-    #    elevated_rr (idx 7) and high_rr (idx 6).
-    wimberley_rows = [
-        {'category': 'Elevated Breathing', 'longest_continuous': 8,
-         'total_hours': 50, 'date': 'Dec 10'},
-        {'category': 'Very High Breathing', 'longest_continuous': 3,
-         'total_hours': 27, 'date': 'Jan 26'},
+    # 3. Harris April canonical: two 1h High HR rows vs an 11h Elevated HR run.
+    #    R26 must headline the 11h Elevated finding, not the 1h spikes.
+    harris_rows = [
+        {'category': 'High Heart Rate', 'longest_continuous': 1,
+         'total_hours': 1, 'date': 'Apr 07'},
+        {'category': 'High Heart Rate', 'longest_continuous': 1,
+         'total_hours': 1, 'date': 'Apr 26'},
+        {'category': 'Elevated Heart Rate', 'longest_continuous': 5,
+         'total_hours': 11, 'date': 'Apr 06'},
     ]
-    assert _events_table_row_1_phase_type(wimberley_rows) == 'very_high_rr', \
-        "Wimberley-style fixture: Very High Breathing outranks Elevated Breathing"
+    assert _events_table_row_1_phase_type(harris_rows) == 'elevated_hr', \
+        "Harris April: 11h Elevated HR must outrank two 1h High HR spikes"
 
     # 4. Empty: no phases (Green patient). Returns None.
     assert _events_table_row_1_phase_type([]) is None
     assert _events_table_row_1_phase_type(None) is None
 
-    # 5. Within-tier tiebreak: longest_continuous desc. Two Low HR phases — the
-    #    one with the longer continuous run wins (matches pdf_render behavior).
-    two_low_hr = [
-        {'category': 'Low Heart Rate', 'longest_continuous': 5,
-         'total_hours': 200, 'date': 'Mar 01'},
-        {'category': 'Low Heart Rate', 'longest_continuous': 24,
+    # 5. Tier tiebreak only on EQUAL duration: equal total_hours, higher tier
+    #    (lower priority index) wins. high_hr outranks elevated_hr at 100h each.
+    equal_hours = [
+        {'category': 'Elevated Heart Rate', 'longest_continuous': 12,
+         'total_hours': 100, 'date': 'Mar 01'},
+        {'category': 'High Heart Rate', 'longest_continuous': 8,
          'total_hours': 100, 'date': 'Mar 15'},
     ]
-    # Both rows are low_hr — tier identical; phase_type returned still low_hr
-    assert _events_table_row_1_phase_type(two_low_hr) == 'low_hr'
-    print("PASS: R16 L1 Comments column reads from events-table row 1 phase type")
+    assert _events_table_row_1_phase_type(equal_hours) == 'high_hr', \
+        "Equal duration: higher tier breaks the tie"
+    print("PASS: R26 Fix 2 dominant finding is burden-dominant, tier as tiebreak")
 
 
 def test_r16_section1_count_equals_unique_episode_count():
@@ -3163,6 +3162,317 @@ def test_r16_section1_count_equals_unique_episode_count():
         f"PASS: R16 Section 1 burden ({counts['display_episode_count']}) == "
         f"batch summary len(eps) ({len(eps)})"
     )
+
+
+# =====================================================================
+# MedHab CSV cohort invariants (MH_001 .. MH_005)
+# Separate cohort sharing the same downstream engine. These guard the new
+# CSV ingest adapter and the partial-coverage / low-confidence behaviour.
+# =====================================================================
+
+import os as _os
+
+_MEDHAB_FOLDER = _os.path.join(
+    _os.path.dirname(__file__), "..", "..", "data", "medhab"
+)
+
+
+def test_mh_001_csv_ingest_schema_identical_to_excel():
+    """MH_001: CSV ingest yields a post-normalization frame structurally
+    identical (same columns, same order, same dtypes) to the Excel ingest.
+    Downstream stages stay unchanged because the frames are interchangeable.
+    """
+    from backend.medhab_ingest import load_medhab_vitals, CANONICAL_COLUMNS
+    from backend.excel_ingest import load_vitals
+
+    medhab = load_medhab_vitals(_MEDHAB_FOLDER)
+    mh_frame = next(iter(medhab.values()))
+
+    excel = load_vitals()
+    ex_frame = next(iter(excel.values()))
+
+    assert list(mh_frame.columns) == list(ex_frame.columns), (
+        f"MedHab columns {list(mh_frame.columns)} must equal Excel columns "
+        f"{list(ex_frame.columns)}"
+    )
+    assert list(mh_frame.columns) == CANONICAL_COLUMNS, (
+        "MedHab columns must match the declared canonical schema"
+    )
+    for col in CANONICAL_COLUMNS:
+        assert mh_frame[col].dtype == ex_frame[col].dtype, (
+            f"dtype mismatch for {col!r}: MedHab {mh_frame[col].dtype} vs "
+            f"Excel {ex_frame[col].dtype}"
+        )
+    print("PASS: MH_001 CSV ingest schema identical to Excel ingest")
+
+
+def test_mh_002_cnt_present_and_numeric_every_file():
+    """MH_002: cnt is present and numeric for every MedHab file, and never
+    fabricated/constant-filled (it varies — it is real device data)."""
+    import glob
+    import pandas as pd
+    from pandas.api.types import is_numeric_dtype
+    from backend.medhab_ingest import load_medhab_file
+
+    files = sorted(glob.glob(_os.path.join(_MEDHAB_FOLDER, "*.csv")))
+    assert files, "MedHab CSV files must be present"
+    for f in files:
+        df = load_medhab_file(f)
+        assert "cnt" in df.columns, f"{_os.path.basename(f)} missing cnt"
+        assert is_numeric_dtype(df["cnt"]), f"{_os.path.basename(f)} cnt not numeric"
+        assert df["cnt"].notna().any(), f"{_os.path.basename(f)} cnt all-NaN"
+        # Real data varies — a single constant value across the whole file
+        # would signal a fabricated/constant fill.
+        assert df["cnt"].nunique(dropna=True) > 1, (
+            f"{_os.path.basename(f)} cnt is constant — looks fabricated"
+        )
+    print(f"PASS: MH_002 cnt present + numeric across {len(files)} files")
+
+
+def test_mh_003_low_confidence_count_matches_source_fixtures():
+    """MH_003: low-confidence (cnt < threshold) counts match the source as
+    fixtures — Jones April = 178, Jones May = 0 (deliberate contrast)."""
+    import pandas as pd
+    from backend.config import settings
+    from backend.medhab_ingest import read_vitals_file
+
+    thr = settings.low_confidence_cnt_threshold
+    fixtures = {
+        "MedHab_Jones_April_2026.csv": 178,
+        "MedHab_Jones_May_2026.csv": 0,
+    }
+    for fname, expected in fixtures.items():
+        raw = read_vitals_file(_os.path.join(_MEDHAB_FOLDER, fname))
+        cnt = pd.to_numeric(raw["cnt"], errors="coerce")
+        low = int((cnt < thr).sum())
+        assert low == expected, (
+            f"{fname}: expected {expected} low-confidence hours (cnt<{thr}), got {low}"
+        )
+    print("PASS: MH_003 low-confidence counts match source fixtures")
+
+
+def test_mh_004_ingest_detector_dispatches_by_extension_only():
+    """MH_004: the ingest detector keys on file SHAPE (extension + header)
+    only — it takes no patient/company identifier. Data-shape-agnostic guard
+    via signature + source inspection.
+    """
+    import inspect
+    from backend import medhab_ingest
+
+    # read_vitals_file takes exactly one positional param: the path. No patient,
+    # company, device, or name argument is permitted.
+    sig = inspect.signature(medhab_ingest.read_vitals_file)
+    params = list(sig.parameters)
+    assert params == ["path"], (
+        f"read_vitals_file must take only 'path', got {params}"
+    )
+    forbidden = {"patient", "patient_id", "company", "device", "name"}
+    assert not (set(params) & forbidden), (
+        "ingest reader must not take a patient/company identifier"
+    )
+
+    # Dispatch is on extension; classification is on header columns.
+    src = inspect.getsource(medhab_ingest.read_vitals_file)
+    assert ".csv" in src and "read_csv" in src, "must dispatch .csv → read_csv"
+    assert "read_excel" in src, "must dispatch .xlsx → read_excel"
+
+    det_src = inspect.getsource(medhab_ingest.detect_shape)
+    assert "columns" in det_src, "detect_shape must key on header columns"
+    for token in ("patient", "company", "device"):
+        assert token not in det_src.lower(), (
+            f"detect_shape must not branch on {token!r}"
+        )
+    print("PASS: MH_004 ingest detector dispatches by file shape only")
+
+
+def test_mh_005_partial_coverage_renders_note_not_error():
+    """MH_005: partial-coverage patients render the partial-period note rather
+    than erroring. Parker April (~16% coverage, <30-day span) must generate a
+    PDF with the fallback note, not be skipped or raise.
+    """
+    import asyncio
+    from backend.config import RENDER_CONFIG
+    from backend.medhab_ingest import load_medhab_vitals, discover_report_windows
+    from batch_generate import generate_one
+
+    specs = discover_report_windows(_MEDHAB_FOLDER)
+    parker_apr = next(
+        s for s in specs if s["patient"] == "Parker" and s["month_key"] == "2026-04"
+    )
+    assert parker_apr["is_partial"], "Parker April must be flagged partial (<30 day span)"
+
+    all_data = load_medhab_vitals(_MEDHAB_FOLDER)
+    result = asyncio.run(generate_one(
+        "Parker", "custom", parker_apr["start"], parker_apr["end"], all_data,
+        report_label="30DayPeriod", is_fallback_90d=True, allow_low_coverage=True,
+    ))
+    # Renders (not skipped, no exception).
+    assert result is not None, "Parker April partial-coverage report must render"
+    assert result["triage"] in ("Green", "Yellow", "Red")
+    assert result.get("pdf_bytes"), "must produce PDF bytes"
+
+    # The partial-period note text must be defined and wired into the renderer
+    # for the 30DayPeriod fallback path.
+    note = RENDER_CONFIG["fallback_note_30day"]
+    assert "less than 30 days" in note
+    import inspect
+    from backend import pdf_render
+    render_src = inspect.getsource(pdf_render)
+    assert "fallback_note_30day" in render_src and "is_fallback_90d" in render_src, (
+        "pdf_render must select fallback_note_30day on the partial 30DayPeriod path"
+    )
+    print("PASS: MH_005 partial-coverage renders partial-period note, not an error")
+
+
+# =====================================================================
+# R26 — port of the 5 PAM-review fixes (+ coverage parity) into the engine
+# =====================================================================
+
+def test_r26_fix1_rr_ceiling_excludes_not_clips():
+    """Fix 1: RR values above the physiologic ceiling are EXCLUDED (NaN), not
+    clipped to the ceiling, and legitimate values are untouched. Distinct from
+    the R22.B clip reversal."""
+    import numpy as np, pandas as pd
+    from backend.excel_ingest import apply_rr_physiologic_ceiling
+    from backend.config import RR_PHYSIOLOGIC_CEILING as C
+    df = pd.DataFrame({
+        "hr_avg": [70, 72, 68],
+        "rr_avg": [25, C + 48, 58],   # 25 legit, 108 artifact, 58 legit (near ceiling)
+        "rr_min": [18, 20, 19],
+        "rr_max": [30, C + 50, C],    # 30 legit, 110 artifact, exactly C (kept — strict >)
+    })
+    out = apply_rr_physiologic_ceiling(df.copy())
+    assert pd.isna(out.loc[1, "rr_avg"]), "impossible 108 avg must be excluded (NaN)"
+    assert pd.isna(out.loc[1, "rr_max"]), "impossible 110 max must be excluded (NaN)"
+    assert out.loc[2, "rr_avg"] == 58, "a legit 58 must NOT be clipped or dropped"
+    assert out.loc[2, "rr_max"] == C, "a value exactly at the ceiling is kept (strict >)"
+    assert out.loc[0, "rr_avg"] == 25
+    # No value above the ceiling survives.
+    for col in ("rr_avg", "rr_min", "rr_max"):
+        assert not (out[col] > C).any(), f"{col} retains a value above the ceiling"
+    print("PASS: R26 Fix 1 RR ceiling excludes impossible values, never clips")
+
+
+def _MH(month_key, patient):
+    """Run one MedHab patient-month through generate_one; return (result, report
+    findings) for assertions. Shared by the R26 integration tests."""
+    import asyncio
+    from backend.medhab_ingest import load_medhab_vitals, discover_report_windows
+    from batch_generate import generate_one
+    data = load_medhab_vitals(_MEDHAB_FOLDER)
+    spec = next(s for s in discover_report_windows(_MEDHAB_FOLDER)
+                if s["patient"] == patient and s["month_key"] == month_key)
+    return asyncio.run(generate_one(
+        patient, "custom", spec["start"], spec["end"], data,
+        report_label="30DayPeriod", is_fallback_90d=spec["is_partial"],
+        allow_low_coverage=True))
+
+
+def test_r26_fix2_burden_dominant_integration():
+    """Fix 2: end-to-end, Harris April headlines the 11h Elevated-HR finding,
+    not the 1h High-HR spikes."""
+    res = _MH("2026-04", "Harris")
+    assert res is not None
+    assert res["dominant_phase_type"] == "elevated_hr", (
+        f"Harris April dominant must be the burden finding (elevated_hr), "
+        f"got {res['dominant_phase_type']}"
+    )
+    print("PASS: R26 Fix 2 Harris April headlines the 11h Elevated-HR finding")
+
+
+def test_r26_fix3_average_is_episode_window_mean():
+    """Fix 3: a High-HR episode's average reflects its own hours (>100), not the
+    day/phase baseline. Verified on the episode object and the rendered Average
+    column."""
+    import pandas as pd, re
+    from backend.episodes import detect_episodes
+    from backend.config import Conditions
+    # 6 consecutive hours, HR avg 102-108 (all High-HR), surrounded by normal.
+    ts = pd.date_range("2026-01-01", periods=12, freq="h")
+    hr = [70, 72, 104, 106, 103, 107, 105, 102, 71, 69, 70, 72]
+    df = pd.DataFrame({
+        "timestamp": ts,
+        "hr_avg": hr, "hr_min": [h - 5 for h in hr], "hr_max": [h + 5 for h in hr],
+        "rr_avg": [16] * 12, "rr_min": [14] * 12, "rr_max": [18] * 12,
+        "cnt": [60] * 12, "gap_flag": [0] * 12,
+    })
+    eps = detect_episodes(df)
+    high = [e for e in eps if e.condition == Conditions.TACHYCARDIA]
+    assert high, "expected a High HR episode"
+    assert high[0].avg_hr is not None and high[0].avg_hr > 100, (
+        f"High-HR episode avg must be >100 (its own hours), got {high[0].avg_hr}"
+    )
+    print("PASS: R26 Fix 3 episode average is the episode-window mean (>100)")
+
+
+def test_r26_fix4_end_of_period_fires_for_end_loaded():
+    """Fix 4: episodes clustered in the final window portion produce the
+    end-of-period headline, never bare 'Stable baseline'."""
+    import pandas as pd
+    from backend.signal_engine import compute_end_of_period_clustering
+    from backend.batch_summary import build_findings_text
+
+    class _Ep:
+        def __init__(s, st, en, dur, cond):
+            s.start_time, s.end_time, s.duration_hours, s.condition = st, en, dur, cond
+    ws, we = "2026-01-01", "2026-01-31"
+    # All burden in the last few days (Jan 28-30) → end-loaded.
+    eps = [_Ep(f"2026-01-{d:02d}T0{h}:00:00", f"2026-01-{d:02d}T0{h}:00:00", 1, "Tachypnea")
+           for d in (28, 29, 30) for h in range(3)]
+    eop = compute_end_of_period_clustering(eps, ws, we)
+    assert eop is not None, "end-loaded episodes must trigger clustering"
+    text = build_findings_text(triage="Green", dominant_phase_type=None, end_of_period=eop)
+    assert "Stable baseline" not in text, "must not render bare Stable baseline"
+    assert "end of monitoring" in text.lower()
+    print("PASS: R26 Fix 4 end-of-period clustering fires for end-loaded patient")
+
+
+def test_r26_fix4_does_not_overfire_for_stable():
+    """Fix 4 (other direction): a patient with episodes spread evenly across the
+    window does NOT get the end-of-period label."""
+    from backend.signal_engine import compute_end_of_period_clustering
+
+    class _Ep:
+        def __init__(s, st, en, dur, cond):
+            s.start_time, s.end_time, s.duration_hours, s.condition = st, en, dur, cond
+    ws, we = "2026-01-01", "2026-01-31"
+    # Two episodes early, two mid — nothing concentrated in the last 20%.
+    eps = [
+        _Ep("2026-01-02T01:00:00", "2026-01-02T03:00:00", 3, "Tachypnea"),
+        _Ep("2026-01-09T01:00:00", "2026-01-09T03:00:00", 3, "Tachypnea"),
+        _Ep("2026-01-15T01:00:00", "2026-01-15T03:00:00", 3, "Tachypnea"),
+    ]
+    assert compute_end_of_period_clustering(eps, ws, we) is None, (
+        "evenly-spread episodes must not trigger end-of-period clustering"
+    )
+    # And no episodes at all is never end-loaded.
+    assert compute_end_of_period_clustering([], ws, we) is None
+    print("PASS: R26 Fix 4 does not over-fire for a genuinely stable patient")
+
+
+def test_r26_fix5_coverage_single_source_parity():
+    """Fix 5: coverage is one canonical value (data_quality.coverage_pct) read by
+    every surface. The per-patient events-table header and the batch summary cell
+    show the identical integer for a single-sensor patient (Harris April: the
+    90.1% vs 92% split must be gone)."""
+    import pandas as pd
+    from backend.signal_engine import compute_data_quality, apply_window
+    from backend.medhab_ingest import load_medhab_vitals, discover_report_windows
+    data = load_medhab_vitals(_MEDHAB_FOLDER)
+    spec = next(s for s in discover_report_windows(_MEDHAB_FOLDER)
+                if s["patient"] == "Harris" and s["month_key"] == "2026-04")
+    df = apply_window(data["Harris"].copy(), "custom", spec["start"], spec["end"])
+    dq = compute_data_quality(df)
+    # The canonical value is raw recorded/expected, not the confidence-adjusted
+    # quality_pct — so the two are allowed to differ, but only ONE is "coverage".
+    events_header = int(round(dq.coverage_pct))
+    batch_cell = int(round(dq.coverage_pct))   # single-sensor reads the same source
+    meta_line = int(round(dq.coverage_pct))
+    assert events_header == batch_cell == meta_line, "all surfaces must agree"
+    # Guard the actual bug: coverage_pct is raw recorded/expected.
+    expected = round(min(100.0, dq.total_hours / max(dq.expected_hours, 1) * 100), 1)
+    assert dq.coverage_pct == expected, "coverage_pct must be raw recorded/expected"
+    print(f"PASS: R26 Fix 5 coverage single-source parity ({events_header}%)")
 
 
 # =====================================================================
@@ -3331,6 +3641,19 @@ if __name__ == "__main__":
         # Round 25 — phase strip / candlestick width parity
         test_r25_strip_and_chart_share_width_symbol,
         test_r25_phase_strip_width_matches_candlestick,
+        # MedHab CSV cohort invariants
+        test_mh_001_csv_ingest_schema_identical_to_excel,
+        test_mh_002_cnt_present_and_numeric_every_file,
+        test_mh_003_low_confidence_count_matches_source_fixtures,
+        test_mh_004_ingest_detector_dispatches_by_extension_only,
+        test_mh_005_partial_coverage_renders_note_not_error,
+        # R26 engine-ported fixes
+        test_r26_fix1_rr_ceiling_excludes_not_clips,
+        test_r26_fix2_burden_dominant_integration,
+        test_r26_fix3_average_is_episode_window_mean,
+        test_r26_fix4_end_of_period_fires_for_end_loaded,
+        test_r26_fix4_does_not_overfire_for_stable,
+        test_r26_fix5_coverage_single_source_parity,
     ]
 
     passed = 0

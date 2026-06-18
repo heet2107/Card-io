@@ -235,6 +235,29 @@ WINDOW_DAYS_30 = 30
 # episode detection so it cannot trigger false breathing alerts.
 RR_NOISE_THRESHOLD_WHEN_HR_MISSING = 50  # brpm; values above this with HR=0 zeroed
 
+# R26 Fix 1: RR physiologic ceiling. RR readings (avg or max) above this are
+# physiologically impossible for human respiration and are treated as sensor
+# artifact — EXCLUDED (dropped to NaN) from episode counting and statistics.
+#
+# This is NOT a re-revert of R22.B. R22.B removed a *clipping* ceiling that
+# rewrote a legitimate value (e.g. a real 58 capped to "60"). This is an
+# *exclusion* of impossible values (e.g. a 108 dropped entirely so it never
+# renders as a peak). Clipping changed real numbers; exclusion removes
+# impossible ones. A future round must not read this as reinstating the clip.
+RR_PHYSIOLOGIC_CEILING = 60  # brpm; avg/max strictly above this are artifact, excluded
+
+# R26 Fix 4: End-of-period clustering. When a meaningful share of episode-hours
+# falls in the final portion of the monitoring window, the Major Findings line
+# names the end-of-period clustering instead of rendering bare "Stable baseline".
+# Tuned to require genuine clustering so a truly stable patient stays stable.
+END_OF_PERIOD_WINDOW_FRACTION = 0.20   # "final portion" = last 20% of the window
+END_OF_PERIOD_MIN_SHARE = 0.50         # >= this share of episode-hours in that portion
+END_OF_PERIOD_MIN_EPISODE_HOURS = 4    # and at least this many episode-hours there
+END_OF_PERIOD_TEMPLATE = (
+    "Stable through mid period; end of monitoring {condition} clustering "
+    "({date_range}, {eps_per_day})."
+)
+
 # Phase labels: None = don't display (skip entirely)
 PHASE_LABELS = {
     "normal":       None,                   # Don't display — skip entirely

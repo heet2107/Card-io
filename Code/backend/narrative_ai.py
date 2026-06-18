@@ -66,16 +66,22 @@ def _clip_physiologic(value: float, metric: str) -> tuple[float, bool]:
 
 
 def _events_table_row_1_phase_type(phase_table_rows):
-    """R16 L1: Return the phase_type of events-table row 1 — the headline finding
-    surfaced to the clinician. Replicates the sort used in pdf_render so the
-    batch summary Comments column always agrees with the per-patient PDF.
+    """Return the phase_type of the headline (dominant) finding surfaced to the
+    clinician — used by both the per-patient Major Findings line and the batch
+    summary Comments column, so the two surfaces always agree.
 
-    Sort key (lowest tuple wins, matching pdf_render._row_sort_key):
-      1. priority_order index (events_table config; lower = higher priority)
-      2. -longest_continuous (longer wins)
+    R26 Fix 2: the dominant finding is the one with the MOST total episode-hours
+    (burden-dominant), not the highest tier. Tier is only a tiebreak within
+    equal duration — the inverse of the pre-R26 priority-first rule, which let a
+    1-hour high-tier spike outrank an 11-hour sustained lower-tier finding
+    (Harris April: two 1h High-HR hours headlined over an 11h Elevated-HR run).
+
+    Sort key (lowest tuple wins):
+      1. -total_episode_hours (more burden wins)
+      2. priority_order index (tier tiebreak; lower = more severe)
       3. start date ASC (earlier wins)
 
-    Returns the phase_type string (e.g. "very_high_hr") or None if no rows.
+    Returns the phase_type string (e.g. "elevated_hr") or None if no rows.
     """
     if not phase_table_rows:
         return None
@@ -88,13 +94,14 @@ def _events_table_row_1_phase_type(phase_table_rows):
         cat = row.get('category', '')
         pt = label_to_type.get(cat)
         pri = priority_order.index(pt) if pt and pt in priority_order else 999
+        total_hours = row.get('total_hours', row.get('sustained_hours', 0)) or 0
         date_str = row.get('date', '')
         try:
             first_date = date_str.split(' to ')[0].strip() if date_str else ''
             sort_date = pd.Timestamp(f"{first_date} 2000") if first_date else pd.Timestamp('2099-01-01')
         except Exception:
             sort_date = pd.Timestamp('2099-01-01')
-        return (pri, -row.get('longest_continuous', row.get('sustained_hours', 0)), sort_date)
+        return (-total_hours, pri, sort_date)
 
     sorted_rows = sorted(phase_table_rows, key=_key)
     row_1 = sorted_rows[0]
@@ -134,7 +141,8 @@ def build_coverage_string(data_quality, positional_stats=None) -> str:
 
     total = data_quality.total_hours if hasattr(data_quality, 'total_hours') else data_quality.get('total_hours', 0)
     expected = data_quality.expected_hours if hasattr(data_quality, 'expected_hours') else data_quality.get('expected_hours', 1)
-    pct = min(data_quality.quality_pct if hasattr(data_quality, 'quality_pct') else data_quality.get('quality_pct', 0), 100.0)
+    # R26 Fix 5 — read the canonical coverage value, not quality_pct.
+    pct = data_quality.coverage_pct if hasattr(data_quality, 'coverage_pct') else data_quality.get('coverage_pct', 0)
     # Single-sensor: still use same template format for cohort visual consistency
     return "Coverage: " + fmt.format(sensor="Device", hours=total, total=expected, pct=pct)
 
@@ -398,6 +406,30 @@ def generate_deterministic_narrative(
         ph_hr = p.get('hr_avg', 0)
         ph_rr = p.get('rr_avg', 0)
 
+        # R26 Fix 3 — true mean DURING the episode hours (duration-weighted mean
+        # of each episode's own average), not the phase/day baseline (ph_hr/ph_rr).
+        # A High-HR episode (>100 by definition) now reports an avg above 100,
+        # not the ~91 day baseline.
+        #
+        # Restricted to episodes whose CONDITION matches this phase's type:
+        # reconcile_counts assigns episodes to a phase by time-overlap, so a
+        # phase's episode bag can include off-condition episodes (e.g. an
+        # elevated_hr phase absorbing low-HR hours), which would drag the mean
+        # below the phase's own threshold and read contradictorily ("elevated
+        # HR avg 84"). Falls back to the phase day-baseline only when no
+        # matching episode is present.
+        from .config import CONDITION_TO_PHASE_TYPE
+        p_type = p.get('type')
+        def _epi_mean(attr):
+            pairs = [(getattr(e, attr), e.duration_hours) for e in p_eps
+                     if getattr(e, attr, None) is not None and e.duration_hours
+                     and CONDITION_TO_PHASE_TYPE.get(getattr(e, 'condition', None)) == p_type]
+            if not pairs:
+                return None
+            return sum(v * w for v, w in pairs) / sum(w for _, w in pairs)
+        epi_hr_mean = _epi_mean('avg_hr')
+        epi_rr_mean = _epi_mean('avg_rr')
+
         # R12 Fix 5: Clip peak values to physiologic bounds.
         if is_hr_phase:
             if 'low' in p.get('type', ''):
@@ -410,7 +442,8 @@ def generate_deterministic_narrative(
                 max_hr = max(hr_maxs) if hr_maxs else hr_stats.max
                 clipped_hr, hr_was_clipped = _clip_physiologic(max_hr, "hr_bpm")
                 peak = f"{clipped_hr:.0f}{'*' if hr_was_clipped else ''} bpm"
-            clipped_avg, _ = _clip_physiologic(ph_hr, "hr_bpm")
+            avg_hr_val = epi_hr_mean if epi_hr_mean is not None else ph_hr
+            clipped_avg, _ = _clip_physiologic(avg_hr_val, "hr_bpm")
             avg = f"{clipped_avg:.0f} bpm"
         elif is_rr_phase:
             # R22.B: RR upper-bound clipping reversed. Sprint A's ingestion
@@ -418,7 +451,8 @@ def generate_deterministic_narrative(
             rr_maxs = _extract_vitals(p_eps, 'Max RR') or _extract_vitals(p_eps, 'RR')
             max_rr = max(rr_maxs) if rr_maxs else rr_stats.max
             peak = f"{max_rr:.0f} brpm"
-            avg = f"{ph_rr:.0f} brpm"
+            avg_rr_val = epi_rr_mean if epi_rr_mean is not None else ph_rr
+            avg = f"{avg_rr_val:.0f} brpm"
         else:
             peak = "—"
             avg = "—"
@@ -460,12 +494,14 @@ def generate_deterministic_narrative(
             'episodes': counts['phase_episode_counts'][idx],
             'period_days': period_days,
             'rr_clipped': False,  # R22.B: RR no longer clipped at the physiologic ceiling.
-            # R23.A — raw condition-window means so the Major Findings parenthetical
-            # can report an avg consistent with the "Sustained [tier]" parent claim.
-            # ph_hr/ph_rr come from window_intelligence aggregating daily means across
-            # the phase's day list, i.e. samples that fall inside the phase window.
-            'phase_hr_avg': float(ph_hr) if ph_hr is not None else None,
-            'phase_rr_avg': float(ph_rr) if ph_rr is not None else None,
+            # R26 Fix 3 — episode-hours mean (true mean during the episode hours),
+            # so the Major Findings parenthetical agrees with the events-table
+            # Average column and the "Sustained [tier]" parent claim. Falls back
+            # to the phase/day baseline only when no episode carries the metric.
+            'phase_hr_avg': float(epi_hr_mean) if epi_hr_mean is not None
+                            else (float(ph_hr) if ph_hr is not None else None),
+            'phase_rr_avg': float(epi_rr_mean) if epi_rr_mean is not None
+                            else (float(ph_rr) if ph_rr is not None else None),
         })
 
     # R18 C3: brief aggregate rows for condition types present in episodes but
@@ -637,9 +673,17 @@ def generate_deterministic_narrative(
     findings_hr_avg = None
     findings_rr_avg = None
     if events_table_row_1_phase_type and phase_table_rows:
-        dominant_row = next(
-            (r for r in phase_table_rows if r.get('phase_type') == events_table_row_1_phase_type),
-            None,
+        # R26 Fix 2/3 — read the avg from the MAX-BURDEN row of the dominant
+        # phase type, not the first row of that type. A long FullPeriod yields
+        # several phases of the same type; the headline must report the avg of
+        # the dominant (largest) one — JB's 339h Low-HR run (avg 44), not a
+        # smaller 76h Low-HR row (avg 49).
+        same_type = [r for r in phase_table_rows
+                     if r.get('phase_type') == events_table_row_1_phase_type]
+        dominant_row = max(
+            same_type,
+            key=lambda r: r.get('total_hours', r.get('sustained_hours', 0)) or 0,
+            default=None,
         )
         if dominant_row is not None:
             findings_hr_avg = dominant_row.get('phase_hr_avg')

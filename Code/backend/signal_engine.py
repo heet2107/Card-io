@@ -162,6 +162,9 @@ def compute_data_quality(df: pd.DataFrame) -> DataQuality:
 
     gap_hours = max(expected - total, 0)
     quality_pct = round((total - low_conf) / max(expected, 1) * 100, 1)
+    # R26 Fix 5 — canonical coverage = recorded / expected, capped at 100,
+    # computed once. All surfaces read this; none recompute their own.
+    coverage_pct = round(min(100.0, total / max(expected, 1) * 100), 1)
 
     return DataQuality(
         low_confidence_hours=low_conf,
@@ -169,6 +172,7 @@ def compute_data_quality(df: pd.DataFrame) -> DataQuality:
         expected_hours=expected,
         total_hours=total,
         quality_pct=quality_pct,
+        coverage_pct=coverage_pct,
     )
 
 
@@ -371,6 +375,84 @@ def compute_activity_data(df: pd.DataFrame):
 
 
 # ── Action Posture ───────────────────────────────────────────────────────────
+
+def compute_end_of_period_clustering(episodes, window_start, window_end):
+    """R26 Fix 4 — detect episodic activity clustered in the FINAL portion of the
+    monitoring window.
+
+    Returns a dict describing the clustering, or None when the patient does not
+    qualify (truly stable, or episodes spread across the whole window). The
+    trigger is genuine end-loading, not "any episode anywhere":
+
+      - episode-hours falling in the last END_OF_PERIOD_WINDOW_FRACTION of the
+        window must be >= END_OF_PERIOD_MIN_EPISODE_HOURS, AND
+      - that tail must hold >= END_OF_PERIOD_MIN_SHARE of all episode-hours.
+
+    Dict keys: condition (display label of the dominant tail condition),
+    date_range, eps_per_day, tail_hours, share.
+    """
+    from .config import (END_OF_PERIOD_WINDOW_FRACTION, END_OF_PERIOD_MIN_SHARE,
+                         END_OF_PERIOD_MIN_EPISODE_HOURS, CONDITION_DISPLAY)
+    if not episodes:
+        return None
+    ws = pd.Timestamp(window_start)
+    we = pd.Timestamp(window_end)
+    span = (we - ws).total_seconds()
+    if span <= 0:
+        return None
+    tail_start = we - pd.Timedelta(seconds=span * END_OF_PERIOD_WINDOW_FRACTION)
+
+    total_hours = 0.0
+    tail_hours = 0.0
+    tail_eps = []          # episodes with any overlap into the tail
+    tail_cond_hours: dict[str, float] = {}
+    for ep in episodes:
+        st = pd.Timestamp(ep.start_time if hasattr(ep, "start_time") else ep["start_time"])
+        en = pd.Timestamp(ep.end_time if hasattr(ep, "end_time") else ep["end_time"])
+        dur = float(ep.duration_hours if hasattr(ep, "duration_hours") else ep["duration_hours"])
+        total_hours += dur
+        # Hours of this episode that fall inside the tail window.
+        ov_start = max(st, tail_start)
+        ov_end = min(en, we)
+        if ov_end >= ov_start:
+            # +1 because episode timestamps are inclusive hour stamps.
+            ov = (ov_end - ov_start).total_seconds() / 3600 + 1
+            ov = min(ov, dur)
+            tail_hours += ov
+            tail_eps.append((ep, st, en))
+            cond = ep.condition if hasattr(ep, "condition") else ep["condition"]
+            tail_cond_hours[cond] = tail_cond_hours.get(cond, 0.0) + ov
+
+    if total_hours <= 0:
+        return None
+    share = tail_hours / total_hours
+    if tail_hours < END_OF_PERIOD_MIN_EPISODE_HOURS or share < END_OF_PERIOD_MIN_SHARE:
+        return None
+
+    # Dominant tail condition by tail-hours.
+    dom_cond = max(tail_cond_hours, key=tail_cond_hours.get)
+    condition = CONDITION_DISPLAY.get(dom_cond, dom_cond)
+
+    tail_starts = [st for (_, st, _) in tail_eps]
+    tail_ends = [en for (_, _, en) in tail_eps]
+    d0, d1 = min(tail_starts), max(tail_ends)
+    if d0.normalize() == d1.normalize():
+        date_range = d0.strftime("%b %d")
+    else:
+        date_range = f"{d0.strftime('%b %d')} to {d1.strftime('%b %d')}"
+
+    tail_days = max(1, (we.normalize() - tail_start.normalize()).days + 1)
+    rate = len(tail_eps) / tail_days
+    eps_per_day = f"{rate:.1f}/day" if rate >= 1 else "<1/day"
+
+    return {
+        "condition": condition,
+        "date_range": date_range,
+        "eps_per_day": eps_per_day,
+        "tail_hours": round(tail_hours, 1),
+        "share": round(share, 2),
+    }
+
 
 def compute_action_posture(triage: str, trend: str, coupled_fraction: float,
                            max_band: str) -> str:

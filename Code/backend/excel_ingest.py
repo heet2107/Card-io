@@ -15,7 +15,7 @@ import numpy as np
 import openpyxl
 import pandas as pd
 
-from .config import settings, RR_NOISE_THRESHOLD_WHEN_HR_MISSING
+from .config import settings, RR_NOISE_THRESHOLD_WHEN_HR_MISSING, RR_PHYSIOLOGIC_CEILING
 from .data_registry_v2 import scan_directory, PATIENT_GROUPS
 
 
@@ -35,6 +35,23 @@ def apply_rr_noise_filter(df: pd.DataFrame) -> pd.DataFrame:
     rr_cols = [c for c in ("rr_avg", "rr_min", "rr_max") if c in df.columns]
     if mask.any() and rr_cols:
         df.loc[mask, rr_cols] = 0
+    return df
+
+
+def apply_rr_physiologic_ceiling(df: pd.DataFrame) -> pd.DataFrame:
+    """R26 Fix 1 — exclude physiologically impossible RR readings as artifact.
+
+    Any RR value (avg, min, or max) strictly above RR_PHYSIOLOGIC_CEILING is set
+    to NaN so it is dropped from episode counting and from statistics. This is an
+    *exclusion* of impossible values, NOT the R22.B clipping ceiling (which
+    rewrote legitimate values to a cap). A real 58 is untouched; an impossible
+    108 is removed entirely. Done field-wise so a legitimate avg co-located with
+    an artifact max is preserved.
+    """
+    ceiling = RR_PHYSIOLOGIC_CEILING
+    for col in ("rr_avg", "rr_min", "rr_max"):
+        if col in df.columns:
+            df.loc[df[col] > ceiling, col] = np.nan
     return df
 
 
@@ -369,6 +386,7 @@ def load_vitals(excel_path: Optional[str] = None, force_reload: bool = False) ->
         print(f"Deduplicated: {before} -> {after} rows ({before - after} duplicates removed)")
 
     combined = apply_rr_noise_filter(combined)
+    combined = apply_rr_physiologic_ceiling(combined)
 
     _cache[cache_key] = combined
 
