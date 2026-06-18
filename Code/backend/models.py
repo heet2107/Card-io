@@ -18,10 +18,12 @@ from pydantic import BaseModel, Field
 class ReportRequest(BaseModel):
     patient_id: str
     range_type: Literal[
-        "last_24h", "last_7d", "last_15d", "last_1m", "last_3m", "custom", "smart_week"
+        "last_24h", "last_7d", "last_15d", "last_1m", "last_3m", "custom", "smart_week",
+        "month",  # MedHab cohort: a calendar-month report (see `month`)
     ]
     start: Optional[str] = None  # ISO date string for custom range
     end: Optional[str] = None
+    month: Optional[str] = None  # MedHab month key, e.g. "2026-04" (range_type="month")
     use_ai: bool = False         # Toggle AI-powered narrative
 
 

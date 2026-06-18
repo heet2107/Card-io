@@ -34,7 +34,9 @@ from .signal_engine import (
     apply_window, compute_stats, compute_full_stats, compute_data_quality,
     compute_data_resolution, compute_triage, compute_trend_assessment,
     compute_action_posture, compute_positional_stats, compute_activity_data,
+    compute_end_of_period_clustering,
 )
+from .medhab_ingest import load_medhab_vitals, discover_report_windows
 from .episodes import detect_episodes, compute_rollups
 from .narrative_ai import generate_narrative
 from .charts import (
@@ -77,8 +79,34 @@ def resolve_patient_id(patient_id: str) -> str:
     return patient_id
 
 
+# ── MedHab cohort (the live app currently serves this cohort) ────────────────
+from pathlib import Path as _Path
+from functools import lru_cache
+
+_MEDHAB_DIR = str(_Path(__file__).resolve().parent.parent / "data" / "medhab")
+
+
+@lru_cache(maxsize=1)
+def _medhab_data() -> dict:
+    """{patient: combined frame} for the MedHab cohort (cached)."""
+    return load_medhab_vitals(_MEDHAB_DIR)
+
+
+@lru_cache(maxsize=1)
+def _medhab_specs() -> list:
+    """Per-patient-month report windows discovered from the data (cached)."""
+    return discover_report_windows(_MEDHAB_DIR)
+
+
+def _is_medhab(patient_id: str) -> bool:
+    try:
+        return patient_id in _medhab_data()
+    except Exception:
+        return False
+
+
 def _cache_key(req: ReportRequest) -> str:
-    raw = f"{req.patient_id}|{req.range_type}|{req.start}|{req.end}|{req.use_ai}"
+    raw = f"{req.patient_id}|{req.range_type}|{req.start}|{req.end}|{req.month}|{req.use_ai}"
     return hashlib.md5(raw.encode()).hexdigest()
 
 
@@ -105,9 +133,11 @@ async def _run_pipeline(req: ReportRequest) -> tuple[dict, "pd.DataFrame"]:
     from .window_intelligence import detect_phases, compute_report_priority
     from .models import Phase
 
-    # ── Step 1: Look up patient ──────────────────────────────────────────
+    # ── Step 1: Look up patient (cohort-aware) ───────────────────────────
     req.patient_id = resolve_patient_id(req.patient_id)
-    all_data = load_vitals()
+    _is_mh = _is_medhab(req.patient_id)
+    _mh_partial = False
+    all_data = _medhab_data() if _is_mh else load_vitals()
     if req.patient_id not in all_data:
         raise HTTPException(status_code=404, detail=f"Patient '{req.patient_id}' not found.")
 
@@ -115,7 +145,17 @@ async def _run_pipeline(req: ReportRequest) -> tuple[dict, "pd.DataFrame"]:
 
     # ── Step 2: Apply time window ────────────────────────────────────────
     from .window_intelligence import find_most_interesting_week
-    if req.range_type == "smart_week":
+    if _is_mh and req.range_type == "month":
+        # MedHab month report — use the same per-patient-month window as the
+        # batch (data-driven start/end, partial-period flag).
+        spec = next((s for s in _medhab_specs()
+                     if s["patient"] == req.patient_id and s["month_key"] == req.month), None)
+        if spec is None:
+            raise HTTPException(status_code=404,
+                detail=f"No data for {req.patient_id} in {req.month}.")
+        df = apply_window(df, "custom", spec["start"], spec["end"])
+        _mh_partial = spec["is_partial"]
+    elif req.range_type == "smart_week":
         result = find_most_interesting_week(df)
         if result:
             ws_ts, we_ts = result["start"], result["end"]
@@ -124,7 +164,9 @@ async def _run_pipeline(req: ReportRequest) -> tuple[dict, "pd.DataFrame"]:
             # Fallback if no episodes found at all
             df = apply_window(df, "last_7d")
     else:
-        df = apply_window(df, req.range_type, req.start, req.end)
+        # Non-month request (or a PAM patient): fall back to a standard window.
+        rt = req.range_type if req.range_type != "month" else "last_1m"
+        df = apply_window(df, rt, req.start, req.end)
     
     if df.empty:
         raise HTTPException(status_code=400, detail="No data in the selected time window.")
@@ -153,7 +195,10 @@ async def _run_pipeline(req: ReportRequest) -> tuple[dict, "pd.DataFrame"]:
         )
 
     # ── Step 4: Run Quality Gates ────────────────────────────────────────
-    gate_result = run_quality_gates(df, window_start_ts, window_end_ts)
+    # MedHab partial months render with a low-coverage badge rather than being
+    # rejected (the min-substantive-days floor still applies).
+    gate_result = run_quality_gates(df, window_start_ts, window_end_ts,
+                                    downgrade_coverage_reject=_is_mh)
 
     if not gate_result["can_generate"]:
         raise HTTPException(
@@ -387,6 +432,12 @@ async def _run_pipeline(req: ReportRequest) -> tuple[dict, "pd.DataFrame"]:
         "bed_summary": bed_summary_model.model_dump() if bed_summary_model else None,
         "chart_bed_hours_b64": chart_bed_hours_b64,
         "prior_comparison": prior_comparison.model_dump() if prior_comparison else None,
+        # MedHab cohort: 30-day report label, partial-period note, end-of-period
+        # clustering — mirrors the batch so the live preview matches the PDF.
+        "report_label": "30DayPeriod" if _is_mh else "",
+        "is_fallback_90d": _mh_partial,
+        "end_of_period": compute_end_of_period_clustering(
+            episodes, window_start_ts, window_end_ts),
     }
     return report_dict, df
 
@@ -395,10 +446,24 @@ async def _run_pipeline(req: ReportRequest) -> tuple[dict, "pd.DataFrame"]:
 
 @app.get("/api/patients")
 async def list_patients():
-    """Return list of patient IDs from Excel."""
+    """Return the MedHab cohort patient list (the cohort the live app serves)."""
     try:
-        patients = get_patient_ids()
+        patients = sorted(_medhab_data().keys())
         return {"patients": patients}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/months")
+async def list_months():
+    """Available MedHab report months, discovered from the data (e.g. April/May
+    2026). Drives the Time Window dropdown; a future June file appears here with
+    no code change."""
+    try:
+        seen: dict[str, str] = {}
+        for s in _medhab_specs():
+            seen[s["month_key"]] = s["month_label"].replace("_", " ")
+        return {"months": [{"key": k, "label": seen[k]} for k in sorted(seen)]}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -411,6 +476,18 @@ async def patient_locations(patient_id: str):
     """
     try:
         patient_id = resolve_patient_id(patient_id)
+        if _is_medhab(patient_id):
+            # MedHab is a single wearable-style stream — no positional sensors.
+            df = _medhab_data()[patient_id]
+            ts = df["timestamp"]
+            return {
+                "patient_id": patient_id,
+                "locations": [],
+                "sensor_types": [],
+                "date_range": {"start": ts.min().strftime("%Y-%m-%d"),
+                               "end": ts.max().strftime("%Y-%m-%d")},
+                "total_hours": int(len(df)),
+            }
         meta = get_patient_metadata(patient_id)
         if not meta["locations"]:
             raise HTTPException(status_code=404, detail=f"Patient '{patient_id}' not found or has no data.")

@@ -70,6 +70,9 @@ async function init() {
         $btnGenerate.disabled = false;
         $btnSmartWeek.disabled = false;
 
+        // Populate the Time Window dropdown with available months (data-driven).
+        await loadMonths();
+
         // Auto-load metadata for the first patient
         $patientSelect.addEventListener("change", onPatientChange);
         await onPatientChange();
@@ -77,6 +80,37 @@ async function init() {
         console.error("Init error:", err);
         $patientSelect.innerHTML = '<option value="">Error loading patients</option>';
     }
+}
+
+/**
+ * Load available report months from the API and populate the Time Window
+ * dropdown. Each option's value is the month key (e.g. "2026-04"); the report
+ * request sends range_type="month" with that key.
+ */
+async function loadMonths() {
+    try {
+        const res = await fetch(`${API_BASE}/api/months`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!data.months || data.months.length === 0) return;
+        $rangeSelect.innerHTML = "";
+        data.months.forEach((m) => {
+            const opt = document.createElement("option");
+            opt.value = m.key;          // e.g. "2026-04"
+            opt.textContent = m.label;  // e.g. "April 2026"
+            $rangeSelect.appendChild(opt);
+        });
+        // Months are concrete windows — the custom-range inputs are not used here.
+        if ($customRange) $customRange.style.display = "none";
+        if ($customRangeEnd) $customRangeEnd.style.display = "none";
+    } catch (err) {
+        console.error("loadMonths error:", err);
+    }
+}
+
+/** True when a dropdown value is a month key like "2026-04". */
+function isMonthKey(v) {
+    return /^\d{4}-\d{2}$/.test(v);
 }
 
 /**
@@ -209,12 +243,15 @@ async function generateReport() {
     const useAI     = $aiToggle.checked;
     if (!patientId) return;
 
-    const body = { 
-        patient_id: patientId, 
+    const body = {
+        patient_id: patientId,
         range_type: rangeType,
         use_ai: useAI
     };
-    if (rangeType === "custom") {
+    if (isMonthKey(rangeType)) {
+        body.range_type = "month";
+        body.month = rangeType;
+    } else if (rangeType === "custom") {
         body.start = $startDate.value || null;
         body.end = $endDate.value || null;
     }
@@ -254,12 +291,15 @@ async function downloadPDF() {
     const useAI     = $aiToggle.checked;
     if (!patientId) return;
 
-    const body = { 
-        patient_id: patientId, 
+    const body = {
+        patient_id: patientId,
         range_type: rangeType,
         use_ai: useAI
     };
-    if (rangeType === "custom") {
+    if (isMonthKey(rangeType)) {
+        body.range_type = "month";
+        body.month = rangeType;
+    } else if (rangeType === "custom") {
         body.start = $startDate.value || null;
         body.end = $endDate.value || null;
     }
