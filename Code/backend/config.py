@@ -740,15 +740,19 @@ RENDER_CONFIG = {
         # per Sajol May 5 call ("Why would we not put it here? It's a pretty
         # powerful statement, right? When you see four episodes a day").
         # Date column tightened (0.26 → 0.18) to make room; total = 1.00.
+        # Unified episodic events table — Sajol's columns (June 19 call). Avg/Min/
+        # Max are three SEPARATE columns of bare numbers (unit omitted; Condition
+        # implies channel). Widths sum to 1.00.
         "columns": [
-            {"key": "number",              "label": "#",                   "width": 0.04},
-            {"key": "category",            "label": "Episode",             "width": 0.19},
-            {"key": "peak",                "label": "Min/Max",             "width": 0.11},
-            {"key": "total_hours",         "label": "Total Hours",         "width": 0.11},
-            {"key": "longest_continuous",  "label": "Longest Continuous",  "width": 0.13},
-            {"key": "episodes_per_day",    "label": "Episodes/day",        "width": 0.10},
-            {"key": "average",             "label": "Average",             "width": 0.12},
-            {"key": "date",                "label": "Date",                "width": 0.20},
+            {"key": "date",       "label": "Date",       "width": 0.07},
+            {"key": "time_span",  "label": "Time Span",  "width": 0.17},
+            {"key": "duration",   "label": "Duration",   "width": 0.08},
+            {"key": "episodes",   "label": "Episodes",   "width": 0.09},
+            {"key": "condition",  "label": "Condition",  "width": 0.16},
+            {"key": "avg",        "label": "Avg",        "width": 0.07},
+            {"key": "min",        "label": "Min",        "width": 0.07},
+            {"key": "max",        "label": "Max",        "width": 0.07},
+            {"key": "comment",    "label": "Comment",    "width": 0.22},
         ],
         "priority_order": [
             "very_high_hr", "very_low_hr", "high_hr", "low_hr",
@@ -769,6 +773,16 @@ RENDER_CONFIG = {
     "physiologic_bounds": {
         "hr_bpm":  {"min": 25, "max": 220},
         "rr_brpm": {"min": 6,  "max": 60},
+    },
+
+    # FIX 5 — the priority badge must be consistent with the triage tier so the
+    # header never reads a contradiction like "GREEN: Routine Review" + "HIGH
+    # PRIORITY". Triage drives the displayed priority. (SKIP, from a data-quality
+    # gate, is preserved separately.) Change the mapping here in one place.
+    "priority_by_triage": {
+        "Green":  "LOW",
+        "Yellow": "MEDIUM",
+        "Red":    "HIGH",
     },
 
     # R17 C: header note appended to 90DayPeriod reports for patients whose
@@ -808,6 +822,21 @@ RENDER_CONFIG = {
     },
 
     "clinical_guidance": {
+        # Unified-table Comment column — clinician-reviewed, condition-keyed
+        # clinical-focus phrase (one per condition type, identical across rows of
+        # the same condition; data-shape-agnostic, never per-patient). This is the
+        # ONLY comment text in scope; the report does not add a separate actions
+        # block. Change wording here in one place.
+        "review_phrase_by_phase_type": {
+            "very_low_hr":  "Check pulse and BP; review beta blockers and AV node agents; ECG if symptomatic",
+            "low_hr":       "Check pulse and BP; review beta blockers and AV node agents; ECG if symptomatic",
+            "elevated_hr":  "Check temp, hydration, pain; review for arrhythmia or infection",
+            "high_hr":      "Check temp, hydration, pain; review for arrhythmia or infection",
+            "very_high_hr": "Check temp, hydration, pain; review for arrhythmia or infection",
+            "elevated_rr":  "Check SpO2 and lung sounds; assess for fluid overload or early infection",
+            "high_rr":      "Check SpO2, work of breathing, fever; consider pulmonary cause or CHF",
+            "very_high_rr": "Check SpO2, work of breathing, fever; consider pulmonary cause or CHF",
+        },
         "min_specificity_tokens": 3,
         "required_token_categories": ["condition", "count_or_duration", "suggested_assessment"],
         "fallback_template": (

@@ -410,6 +410,51 @@ def _build_footer(report, st):
     return []
 
 
+def _build_snapshot_24h_elements(report, st, page_w):
+    """Item 2 — compact 'Last 24 Hours' block: HR and RR avg/min/max over the
+    rolling final 24h of the data. No fabricated alerts; graceful low-coverage
+    note. Returns [] when unavailable."""
+    snap = _v(report, "snapshot_24h", None)
+    if not snap:
+        return []
+
+    def _cell(v, unit):
+        return f"{v:.0f} {unit}" if isinstance(v, (int, float)) else "—"
+
+    hr = snap.get("hr", {}) or {}
+    rr = snap.get("rr", {}) or {}
+    header = [Paragraph(f"<b>{lbl}</b>", st["table_header"]) for lbl in ("Vital", "Avg", "Min", "Max")]
+    hr_row = [Paragraph("Heart Rate", st["table_cell"]),
+              Paragraph(_cell(hr.get("avg"), "bpm"), st["table_cell"]),
+              Paragraph(_cell(hr.get("min"), "bpm"), st["table_cell"]),
+              Paragraph(_cell(hr.get("max"), "bpm"), st["table_cell"])]
+    rr_row = [Paragraph("Breathing", st["table_cell"]),
+              Paragraph(_cell(rr.get("avg"), "brpm"), st["table_cell"]),
+              Paragraph(_cell(rr.get("min"), "brpm"), st["table_cell"]),
+              Paragraph(_cell(rr.get("max"), "brpm"), st["table_cell"])]
+    widths = [page_w * 0.28, page_w * 0.24, page_w * 0.24, page_w * 0.24]
+    tbl = Table([header, hr_row, rr_row], colWidths=widths)
+    tbl.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), _HEADER_BG),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('GRID', (0, 0), (-1, -1), 0.5, _BORDER),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, _hex("#F9FAFB")]),
+        ('LEFTPADDING', (0, 0), (-1, -1), 4),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+        ('TOPPADDING', (0, 0), (-1, -1), 2),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+    ]))
+    elems = [Paragraph("Last 24 Hours", st["section_head"]), tbl]
+    if snap.get("coverage_pct", 100) < 75:
+        note = (f"Limited data in the final 24h "
+                f"({snap.get('hours_present', 0)}/{snap.get('expected_hours', 24)}h); "
+                f"values reflect available readings.")
+        elems.append(Paragraph(f"<i>{_html.escape(note)}</i>", st["legend"]))
+    elems.append(Spacer(1, 3))
+    return elems
+
+
 # ── PDF Builder ──────────────────────────────────────────────────────────────
 
 
@@ -888,6 +933,77 @@ def render_status_timeline_bar(window_start, window_end, display_phases, content
     return bar_table, segments
 
 
+# Severity-tier rank for the events-table sort: most clinically important first
+# (channel-agnostic), then chronological within a tier. Lower = more severe.
+_SEVERITY_TIER_RANK = {
+    "very_high_hr": 0, "very_low_hr": 0, "very_high_rr": 0,
+    "high_hr": 1, "high_rr": 1,
+    "low_hr": 2,
+    "elevated_hr": 3, "elevated_rr": 3,
+}
+
+
+# Per-tier block colors matching the web app's .phase-block CSS (style.css), so
+# the PDF clinical-status blocks look like the app. (bg, text) per phase type.
+_PHASE_BLOCK_COLORS = {
+    "normal":       ("#059669", "#FFFFFF"),
+    "stable":       ("#059669", "#FFFFFF"),
+    "very_low_hr":  ("#5F0000", "#FFFFFF"),
+    "low_hr":       ("#C62828", "#FFFFFF"),
+    "elevated_hr":  ("#FF8F00", "#1F2937"),
+    "high_hr":      ("#D84315", "#FFFFFF"),
+    "very_high_hr": ("#7F0000", "#FFFFFF"),
+    "elevated_rr":  ("#42A5F5", "#1F2937"),
+    "high_rr":      ("#0D47A1", "#FFFFFF"),
+    "very_high_rr": ("#002171", "#FFFFFF"),
+}
+
+
+def render_phase_blocks_bar(display_phases, content_width_inches, st):
+    """Clinical-status bar as phase BLOCKS — one solid colored block per finding,
+    width proportional to its days, labeled condition + date range. Mirrors the
+    web app's native phase blocks so the PDF clinical status matches the app."""
+    from reportlab.lib.units import inch
+    from reportlab.lib.colors import HexColor
+    blocks = list(display_phases or [])
+    if not blocks:
+        return None
+
+    def _days(p):
+        try:
+            return max(1, int(_v(p, 'days', 1) or 1))
+        except Exception:
+            return 1
+
+    total = sum(_days(p) for p in blocks) or 1
+    widths = [(_days(p) / total) * content_width_inches * inch for p in blocks]
+    cells = []
+    for p in blocks:
+        ptype = _v(p, 'type', '')
+        _bg, fg = _PHASE_BLOCK_COLORS.get(ptype, ("#6B7280", "#FFFFFF"))
+        label = _html.escape(str(_v(p, 'label', ptype) or ptype))
+        dr = _html.escape(str(_v(p, 'date_range', '') or ''))
+        s = ParagraphStyle(f"pb_{ptype}", parent=st['phase_label'], alignment=1,
+                           textColor=HexColor(fg), fontSize=8, leading=10)
+        cells.append(Paragraph(
+            f"<b>{label}</b><br/><font size='6'>{dr} ({_days(p)}d)</font>", s))
+    tbl = Table([cells], colWidths=widths, rowHeights=[0.52 * inch])
+    style = [
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 3),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 3),
+        ('TOPPADDING', (0, 0), (-1, -1), 2),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+        ('INNERGRID', (0, 0), (-1, -1), 1.5, colors.white),
+    ]
+    for i, p in enumerate(blocks):
+        bg, _fg = _PHASE_BLOCK_COLORS.get(_v(p, 'type', ''), ("#6B7280", "#FFFFFF"))
+        style.append(('BACKGROUND', (i, 0), (i, 0), HexColor(bg)))
+    tbl.setStyle(TableStyle(style))
+    return tbl
+
+
 def render_timeline_date_axis(segments, reporting_days, content_width_inches, date_axis_style):
     """R12 Fix 3: Date axis scales format and interval to period length.
 
@@ -1345,10 +1461,20 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
     """
     buf = io.BytesIO()
     st = _styles()
+    # PDF /Title metadata — drives the in-browser viewer label (was "(anonymous)").
+    _pid = _v(report, 'patient_id', 'Patient')
+    try:
+        import pandas as _pd
+        _ws = _v(report, 'window_start', '')
+        _mlabel = _pd.Timestamp(_ws).strftime('%B %Y') if _ws else ''
+    except Exception:
+        _mlabel = ''
+    _doc_title = f"CardioReport - {_pid}" + (f" - {_mlabel}" if _mlabel else "")
     doc = SimpleDocTemplate(
         buf, pagesize=letter,
         leftMargin=0.5 * inch, rightMargin=0.5 * inch,
         topMargin=0.4 * inch, bottomMargin=0.35 * inch,
+        title=_doc_title, author="CardioReport",
     )
     elements = []
     page_w = letter[0] - 1.0 * inch
@@ -1438,24 +1564,11 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
         # on the same page. Previously set to content_width * 0.5 (R22.D),
         # which left the strip visibly narrower than the chart.
         strip_width = settings.plot_width_inches
-        bar_table, segments = render_status_timeline_bar(
-            ws_tmp, we_tmp, display_phases,
-            strip_width, st["phase_label"],
-            recorded_dates=recorded_dates,
-            phase_number_map=phase_number_map,
-            phase_list_for_overlap=display_phases,
-            episode_day_map=episode_day_map,
-        )
-        elements.append(bar_table)
-
-        date_style = ParagraphStyle('date_ax', parent=st['legend'], alignment=0, fontSize=6)
-        date_axis = render_timeline_date_axis(
-            segments,
-            compute_reporting_period_days(ws_tmp, we_tmp),
-            strip_width,
-            date_style
-        )
-        elements.append(date_axis)
+        # Clinical status as phase BLOCKS (matches the web app), not the
+        # day-timeline strip. One colored block per finding, sized by days.
+        blocks_bar = render_phase_blocks_bar(display_phases, strip_width, st)
+        if blocks_bar is not None:
+            elements.append(blocks_bar)
         elements.append(Spacer(1, 4))
 
     elif all_eps:
@@ -1582,6 +1695,10 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
 
         epd_str = format_episodes_per_day(total_episodes, period_days)
 
+        # Item 2 — 24h snapshot: top of the body, below the strip, above the
+        # 30-day summary (metrics) table.
+        elements.extend(_build_snapshot_24h_elements(report, st, page_w))
+
         metrics_header = [
             Paragraph("<b>Episodic Events</b>", st["table_header"]),
             Paragraph("<b>Total Hours</b>", st["table_header"]),
@@ -1651,25 +1768,24 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
             max_rows = evt_cfg.get("max_rows", 8)
             priority_order = evt_cfg.get("priority_order", [])
 
-            # R12 Fix 6: Three-key deterministic sort
-            # (priority_class ASC, longest_continuous DESC, start_date ASC)
+            # Sort by clinical importance: severity TIER first (Very High/Low >
+            # High > Elevated/Low), channel-agnostic, then chronological by start
+            # date within a tier. Logical and not scrambled.
             def _row_sort_key(row):
-                cat = row.get('category', '')
-                phase_type = None
-                for pt_key, pt_label in PHASE_LABELS.items():
-                    if pt_label == cat:
-                        phase_type = pt_key
-                        break
-                pri = priority_order.index(phase_type) if phase_type and phase_type in priority_order else 999
-                # Parse date from "Mar 15" or "Mar 15 to Mar 22" format
-                date_str = row.get('date', '')
+                phase_type = row.get('phase_type') or row.get('brief_phase_type')
+                if not phase_type:
+                    for pt_key, pt_label in PHASE_LABELS.items():
+                        if pt_label == row.get('category', ''):
+                            phase_type = pt_key
+                            break
+                sev = _SEVERITY_TIER_RANK.get(phase_type, 9)
+                date_str = row.get('date', '')  # single first-episode date
                 try:
                     first_date = date_str.split(' to ')[0].strip() if date_str else ''
-                    # Add a fixed year so parse works
                     sort_date = pd.Timestamp(f"{first_date} 2000") if first_date else pd.Timestamp('2099-01-01')
                 except Exception:
                     sort_date = pd.Timestamp('2099-01-01')
-                return (pri, -row.get('longest_continuous', row.get('sustained_hours', 0)), sort_date)
+                return (sev, sort_date)
 
             sorted_rows = sorted(phase_table_rows, key=_row_sort_key)
             # R18 N2: brief rows (R18 C3 aggregations) bypass the max_rows cap.
@@ -1707,55 +1823,56 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
             table_columns = evt_cfg.get("columns", [])
             if not table_columns:
                 raise ValueError("Missing 'columns' in events_table config")
-            
+
+            # Compact cell/header styles for the unified table only — the Comment
+            # column wraps, so tighter leading keeps the report within two pages
+            # without changing any other table.
+            from reportlab.lib.styles import ParagraphStyle as _PS
+            evt_cell = _PS("evt_cell", parent=st["table_cell"], fontSize=6.5, leading=7.5)
+            evt_hdr = _PS("evt_hdr", parent=st["table_header"], fontSize=6.5, leading=7.5)
+
             header_row = []
             for col in table_columns:
-                header_row.append(Paragraph(f'<b>{col["label"]}</b>', st["table_header"]))
+                header_row.append(Paragraph(f'<b>{col["label"]}</b>', evt_hdr))
             pt_data = [header_row]
 
-            for row_num, row in enumerate(display_rows, start=1):
-                lc = row.get('longest_continuous', row.get('sustained_hours', 0))
-                th = row.get('total_hours', row.get('sustained_hours', 0))
-                lc_str = row.get('longest_continuous_str', f"{lc}h")
-                th_str = row.get('total_hours_str', f"{th}h")
-                if lc >= settings.sustained_bold_threshold_hours:
-                    lc_p = Paragraph(f"<b>{lc_str}</b>", st["table_cell"])
-                else:
-                    lc_p = Paragraph(lc_str, st["table_cell"])
-                if th >= settings.sustained_bold_threshold_hours:
-                    th_p = Paragraph(f"<b>{th_str}</b>", st["table_cell"])
-                else:
-                    th_p = Paragraph(th_str, st["table_cell"])
+            def _bare(s):
+                # Bare metric number — strip the repeated unit (Condition implies
+                # the channel); keep the '*' physiologic-clip marker if present.
+                return _html.escape(str(s).replace(" bpm", "").replace(" brpm", "").strip())
 
+            for row_num, row in enumerate(display_rows, start=1):
+                th = row.get('total_hours', row.get('sustained_hours', 0))
+                # Bold linking (Sajol's key ask): bold the condition keyword AND
+                # its triggering metric — Max for high conditions, Min for low —
+                # so the eye connects condition to the number that crossed.
+                ptype = row.get('phase_type', '') or row.get('brief_phase_type', '') or ''
+                is_low = 'low' in ptype
                 row_cells = []
                 for col in table_columns:
                     k = col["key"]
-                    if k == "number":
-                        # R14 C2: Phase number column — uses same numbering as strip
-                        row_cells.append(Paragraph(f"<b>{row_num}</b>", st["table_cell"]))
-                    elif k == "category":
-                        row_cells.append(Paragraph(row.get('category', ''), st["table_cell"]))
-                    elif k == "peak":
-                        row_cells.append(Paragraph(row.get('peak', ''), st["table_cell"]))
-                    elif k == "longest_continuous":
-                        row_cells.append(lc_p)
-                    elif k == "total_hours":
-                        row_cells.append(th_p)
-                    elif k == "episodes_per_day":
-                        # R22.D — episodes-per-day for this row. Same "0"/"<1"/int
-                        # rule as the batch summary cell so the surfaces agree.
-                        from .batch_summary import format_episodes_per_day
-                        epd = format_episodes_per_day(
-                            row.get('episodes', 0),
-                            row.get('period_days', 0),
-                        )
-                        row_cells.append(Paragraph(epd, st["table_cell"]))
-                    elif k == "average":
-                        row_cells.append(Paragraph(row.get('average', ''), st["table_cell"]))
-                    elif k == "date":
-                        row_cells.append(Paragraph(row.get('date', ''), st["table_cell"]))
+                    if k == "date":
+                        row_cells.append(Paragraph(row.get('date', ''), evt_cell))
+                    elif k == "time_span":
+                        row_cells.append(Paragraph(row.get('time_span', ''), evt_cell))
+                    elif k == "duration":
+                        row_cells.append(Paragraph(f"{th}h", evt_cell))
+                    elif k == "episodes":
+                        row_cells.append(Paragraph(str(row.get('episodes', 0)), evt_cell))
+                    elif k == "condition":
+                        row_cells.append(Paragraph(f"<b>{_html.escape(row.get('category', ''))}</b>", evt_cell))
+                    elif k == "avg":
+                        row_cells.append(Paragraph(_bare(row.get('average', '')), evt_cell))
+                    elif k == "min":
+                        v = _bare(row.get('min', '—'))
+                        row_cells.append(Paragraph(f"<b>{v}</b>" if is_low else v, evt_cell))
+                    elif k == "max":
+                        v = _bare(row.get('max', '—'))
+                        row_cells.append(Paragraph(v if is_low else f"<b>{v}</b>", evt_cell))
+                    elif k == "comment":
+                        row_cells.append(Paragraph(_html.escape(row.get('comment', '')), evt_cell))
                     else:
-                        row_cells.append(Paragraph("", st["table_cell"]))
+                        row_cells.append(Paragraph("", evt_cell))
                 pt_data.append(row_cells)
             
             # Create Table with widths defined in config
@@ -1770,8 +1887,8 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
                 ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, _hex("#F9FAFB")]),
                 ('LEFTPADDING', (0, 0), (-1, -1), 4),
                 ('RIGHTPADDING', (0, 0), (-1, -1), 4),
-                ('TOPPADDING', (0, 0), (-1, -1), 3),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+                ('TOPPADDING', (0, 0), (-1, -1), 2),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
             ]))
             elements.append(pt)
             # R11 Fix 2a: Overflow line
@@ -1794,6 +1911,17 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
             if len(sentences) > 2:
                 closing = '. '.join(sentences[:2]) + '.'
             elements.append(Paragraph(_html.escape(closing), st["body"]))
+
+        # FIX 1 — Suggested Clinical Review Actions block, so the PDF matches the
+        # web app (same report['suggested_actions']).
+        _actions = _v(report, 'suggested_actions', []) or []
+        if _actions:
+            from reportlab.lib.styles import ParagraphStyle as _PS
+            _act_style = _PS('act_bullet', parent=st['body'], fontSize=7.5, leading=9.5, leftIndent=8)
+            elements.append(Spacer(1, 4))
+            elements.append(Paragraph("<b>Suggested Clinical Review Actions</b>", st["section_head"]))
+            for a in _actions:
+                elements.append(Paragraph(f"• {_html.escape(str(a))}", _act_style))
     else:
         elements.append(Paragraph(_html.escape(str(narrative)), st["body"]))
 
@@ -1852,14 +1980,18 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
             elems.append(Spacer(1, 6))
         return elems
 
-    def _make_candlestick_elements():
+    def _make_candlestick_elements(height_override=None):
         """Create fresh ReportLab elements for candlestick chart."""
         elems = []
         if candle_bytes is not None:
             # R11: reduced height for weekly to fit 2-page constraint.
             # R15 E1: one_page_only also gets the smaller height to keep the
             # study packaging report on a single page even for high-event patients.
-            if candle_strategy == 'weekly':
+            # height_override: the shared charts page (page 2) requests a shorter
+            # candlestick since it also carries histogram + activity.
+            if height_override is not None:
+                c_height = height_override
+            elif candle_strategy == 'weekly':
                 c_height = min(settings.candlestick_long_period_height_inches, 2.5)
             elif one_page_only:
                 c_height = min(settings.candlestick_height_inches, 2.5)
@@ -1974,18 +2106,17 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
     placed_threshold_legend = False
 
     if not is_long_full_period:
-        # Standard layout: pattern observations and candlestick on page 1
-        if df is not None:
+        # Page-fit: page 1 carries the textual decision content (snapshot, summary,
+        # unified table, statistics, suggested actions). Pattern observations +
+        # candlestick move to the charts page (page 2) so the report stays two
+        # pages — except one_page_only, which keeps everything on one page.
+        if df is not None and one_page_only:
             elements.append(Spacer(1, 2))
             elements.extend(_make_findings_elements())
             elements.extend(_make_candlestick_elements())
-
-            # R15 C2: Strip index legend now sits just above Clinical Alerting Thresholds.
-            # R15 E1: one_page_only forces both legends onto page 1 even if events table is full.
-            if num_events_table_rows <= 3 or one_page_only:
-                elements.extend(_make_strip_index_legend())
-                elements.extend(_make_threshold_legend())
-                placed_threshold_legend = True
+            elements.extend(_make_strip_index_legend())
+            elements.extend(_make_threshold_legend())
+            placed_threshold_legend = True
     elif is_long_full_period:
         # 3-page layout: hint that visual trends continue on next page
         elements.append(Spacer(1, 12))
@@ -2022,6 +2153,14 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
     elements.extend(_build_compact_header(report, st, page_w, final_page_num, total_pages=total_pages))
 
     if df is not None:
+        # Page-fit: pattern observations + candlestick relocated here from page 1
+        # (candlestick rendered shorter as it shares the page with histogram +
+        # activity), keeping page 1 within the two-page budget.
+        elements.extend(_make_findings_elements())
+        ce = _make_candlestick_elements(height_override=2.1)
+        if ce:
+            elements.extend(ce)
+            elements.append(Spacer(1, 3))
         # FIX 2: SECTION 4 — Histogram SECOND (distribution context)
         elements.append(Paragraph(
             "Vital Sign Distribution", st["section_head"]))

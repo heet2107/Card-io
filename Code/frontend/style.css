@@ -995,6 +995,15 @@ input:focus + .slider {
   background: var(--gray-50);
 }
 
+/* Episodic Events: keep Date + Time Span on one line (Comment column absorbs
+   the remaining width). */
+#episodes-table th:nth-child(1),
+#episodes-table td:nth-child(1),
+#episodes-table th:nth-child(2),
+#episodes-table td:nth-child(2) {
+  white-space: nowrap;
+}
+
 .clinical-table tbody tr.severity-high {
   background: var(--red-50);
 }

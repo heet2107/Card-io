@@ -30,7 +30,7 @@ from backend.signal_engine import (
     compute_data_quality, compute_data_resolution,
     compute_triage, compute_trend_assessment, compute_action_posture,
     compute_positional_stats, compute_activity_data,
-    compute_end_of_period_clustering,
+    compute_end_of_period_clustering, compute_last_24h_snapshot,
 )
 from backend.episodes import detect_episodes, compute_rollups
 from backend.narrative_ai import generate_narrative
@@ -143,6 +143,10 @@ async def generate_one(patient_id: str, range_type: str,
     raw_phases  = detect_phases(df, episodes)
     phases      = [Phase(**p) for p in raw_phases]
     report_prio = compute_report_priority(episodes, raw_phases, max_score, gate["warnings"])
+    # FIX 5 — priority badge consistent with triage tier (no GREEN + HIGH). SKIP preserved.
+    if report_prio != "SKIP":
+        from backend.config import RENDER_CONFIG as _RC
+        report_prio = _RC.get("priority_by_triage", {}).get(triage, report_prio)
 
     sensor_type = "chair"
     if "location" in df.columns and Locations.BED in df["location"].values:
@@ -177,6 +181,7 @@ async def generate_one(patient_id: str, range_type: str,
         "report_date": (window_end_ts + pd.Timedelta(days=1)).strftime("%Y-%m-%d"),
         "data_resolution": data_res,
         "coverage_summary": coverage,
+        "snapshot_24h": compute_last_24h_snapshot(df),
         "disclaimer": "Decision-support summary derived from longitudinal vital sign trends; interpret in clinical context.",
         "hr_summaries": hr_stats.model_dump(),
         "rr_summaries": rr_stats.model_dump(),

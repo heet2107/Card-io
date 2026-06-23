@@ -754,24 +754,26 @@ def test_phase_numbering_config():
 
 
 def test_events_table_has_number_column():
-    """C2: Events table config must have a '#' column as first entry."""
+    """Superseded by the unified table: the legacy '#' column is gone; the table
+    now leads with Date. Name kept so the invariant count stays stable."""
     from backend.config import RENDER_CONFIG
     cols = RENDER_CONFIG["events_table"]["columns"]
-    assert cols[0]["key"] == "number", f"First column must be 'number', got '{cols[0]['key']}'"
-    assert cols[0]["label"] == "#", f"First column label must be '#', got '{cols[0]['label']}'"
-    print("PASS: Events table has '#' column")
+    keys = [c["key"] for c in cols]
+    assert "number" not in keys, "unified table removed the '#' number column"
+    assert cols[0]["key"] == "date", f"First column must be 'date', got '{cols[0]['key']}'"
+    print("PASS: unified events table leads with Date, no '#' column")
 
 
 def test_phase_numbers_single_source():
-    """C3: phase_number_map is computed once and shared with both strip and table."""
+    """Superseded: the clinical status now renders as phase BLOCKS (label +
+    date range, matching the web app), not the #N-numbered day-timeline strip.
+    generate_pdf builds it via render_phase_blocks_bar. Name kept for stability."""
     import inspect
-    from backend.pdf_render import generate_pdf
+    from backend.pdf_render import generate_pdf, render_phase_blocks_bar
     src = inspect.getsource(generate_pdf)
-    assert "phase_number_map" in src, "generate_pdf must compute phase_number_map"
-    # Must appear in the render_status_timeline_bar call
-    assert "phase_number_map=phase_number_map" in src or "phase_number_map=phase_number" in src, \
-        "phase_number_map must be passed to render_status_timeline_bar"
-    print("PASS: Phase numbering uses single source")
+    assert "render_phase_blocks_bar(" in src, \
+        "generate_pdf must render the clinical status as phase blocks"
+    print("PASS: clinical status renders as phase blocks (matches app)")
 
 
 def test_phase_strip_renderer_accepts_numbers():
@@ -1504,11 +1506,12 @@ def test_r15_c2_strip_index_legend_below_charts():
     # Must define _make_strip_index_legend
     assert "_make_strip_index_legend" in src, \
         "generate_pdf must define _make_strip_index_legend (R15 C2)"
-    # And it must appear after the candlestick element insertion on page 1
-    candle_idx = src.find("_make_candlestick_elements()")
-    legend_idx = src.find("_make_strip_index_legend()")
+    # And it must appear after the candlestick element. Match the open paren so
+    # the check is robust to the candlestick's height_override parameter.
+    candle_idx = src.find("_make_candlestick_elements(")
+    legend_idx = src.find("_make_strip_index_legend(")
     assert legend_idx > candle_idx, \
-        "Strip index legend must be inserted AFTER candlestick on page 1 (R15 C2)"
+        "Strip index legend must be inserted AFTER candlestick (R15 C2)"
     print("PASS: R15 C2 strip index legend placed after trends chart")
 
 
@@ -2505,23 +2508,17 @@ def test_r22_c1_red_row_bolds_trigger_phrase_only():
 
 
 def test_r22_d_events_table_includes_episodes_per_day_column():
-    """R22.D: events table on individual reports includes Episodes/day
-    between Longest Continuous and Average.
-    """
+    """Superseded by the unified table: exact column order is Date, Time Span,
+    Duration, Episodes, Condition, Avg, Min, Max, Comment; widths sum to 1.0.
+    Name kept so the invariant count stays stable."""
     from backend.config import RENDER_CONFIG
     cols = RENDER_CONFIG["events_table"]["columns"]
     keys = [c["key"] for c in cols]
-    assert "episodes_per_day" in keys, "Events table must have episodes_per_day column"
-    lc_idx = keys.index("longest_continuous")
-    epd_idx = keys.index("episodes_per_day")
-    avg_idx = keys.index("average")
-    assert lc_idx < epd_idx < avg_idx, (
-        "episodes_per_day must sit between longest_continuous and average"
-    )
-    # Widths still sum to ~1.0
+    assert keys == ["date", "time_span", "duration", "episodes",
+                    "condition", "avg", "min", "max", "comment"], keys
     total = sum(c["width"] for c in cols)
     assert abs(total - 1.0) < 1e-6, f"Column widths must sum to 1.0, got {total}"
-    print("PASS: R22.D events table has Episodes/day column in correct position")
+    print("PASS: unified events table column set verified")
 
 
 def test_r22_d_patient_summary_uses_table_layout():
@@ -3476,6 +3473,216 @@ def test_r26_fix5_coverage_single_source_parity():
 
 
 # =====================================================================
+# Unified table + 24h snapshot invariants
+# =====================================================================
+
+def _ut_narrative(month_key, patient):
+    """Build the narrative dict for a MedHab patient-month (no PDF) for row asserts."""
+    import asyncio
+    from backend.medhab_ingest import load_medhab_vitals, discover_report_windows
+    from backend.signal_engine import (apply_window, compute_stats, compute_data_quality,
+                                        compute_triage, compute_trend_assessment,
+                                        compute_positional_stats)
+    from backend.episodes import detect_episodes, compute_rollups
+    from backend.window_intelligence import detect_phases
+    from backend.narrative_ai import generate_narrative
+    from backend.quality_gates import run_quality_gates
+    data = load_medhab_vitals(_MEDHAB_FOLDER)
+    spec = next(s for s in discover_report_windows(_MEDHAB_FOLDER)
+                if s["patient"] == patient and s["month_key"] == month_key)
+    df = apply_window(data[patient].copy(), "custom", spec["start"], spec["end"])
+    ws, we = df["timestamp"].min(), df["timestamp"].max()
+    g = run_quality_gates(df, ws, we, downgrade_coverage_reject=True)
+    hr, rr = compute_stats(df); dq = compute_data_quality(df); eps = detect_episodes(df)
+    ro = compute_rollups(eps, df); tr = compute_triage(eps, ro.coupled_fraction, df=df)
+    td, _ = compute_trend_assessment(df, eps)
+    nd, _a, _s = asyncio.run(generate_narrative(
+        patient, ws.strftime("%Y-%m-%d"), we.strftime("%Y-%m-%d"), hr, rr, dq, eps, ro, tr, td, "",
+        use_llm_override=False, quality_warnings=g["warnings"], phases=detect_phases(df, eps),
+        bed_summary=None, activity_trend=None, positional_stats=compute_positional_stats(df)))
+    return nd, df, eps
+
+
+def _utnum(s):
+    import re
+    m = re.search(r"-?\d+(?:\.\d+)?", str(s))
+    return float(m.group()) if m else None
+
+
+def test_ut_001_unified_table_columns():
+    """Unified table has Sajol's exact columns."""
+    from backend.config import RENDER_CONFIG
+    keys = [c["key"] for c in RENDER_CONFIG["events_table"]["columns"]]
+    assert keys == ["date", "time_span", "duration", "episodes",
+                    "condition", "avg", "min", "max", "comment"], keys
+    print("PASS: UT.001 unified table columns")
+
+
+def test_ut_002_metrics_condition_channel_matched():
+    """Each row's Avg/Min/Max come ONLY from its own channel — verified by
+    MEMBERSHIP (the rendered value is one of that condition's episodes' own-channel
+    values), so no HR row shows an RR value and vice-versa. Harris April fixture."""
+    from backend.config import CONDITION_TO_PHASE_TYPE
+    nd, df, eps = _ut_narrative("2026-04", "Harris")
+    rows = [r for r in nd.get("phase_table_rows", []) if "(brief)" not in r.get("category", "")]
+    assert rows, "expected rows"
+    HR = {"low_hr", "very_low_hr", "elevated_hr", "high_hr", "very_high_hr"}
+    RR = {"elevated_rr", "high_rr", "very_high_rr"}
+    checked = 0
+    for r in rows:
+        pt = r.get("phase_type")
+        matched = [e for e in eps if CONDITION_TO_PHASE_TYPE.get(e.condition) == pt]
+        if not matched:
+            continue
+        if pt in HR:
+            chan = {round(e.min_hr) for e in matched if e.min_hr is not None} | \
+                   {round(e.max_hr) for e in matched if e.max_hr is not None}
+            assert "brpm" not in str(r.get("min")) and "brpm" not in str(r.get("max"))
+        elif pt in RR:
+            chan = {round(e.min_rr) for e in matched if e.min_rr is not None} | \
+                   {round(e.max_rr) for e in matched if e.max_rr is not None}
+            assert "brpm" in str(r.get("max"))
+        else:
+            continue
+        for which in ("min", "max"):
+            assert round(_utnum(r.get(which))) in chan, (
+                f"{pt} {which}={r.get(which)} not a condition-matched channel value {sorted(chan)}")
+            checked += 1
+    assert checked > 0
+    print(f"PASS: UT.002 metrics condition-channel matched ({checked} cells)")
+
+
+def test_ut_003_snapshot_window_from_last_timestamp_no_hardcode():
+    """24h snapshot window derives from the data's own last timestamp — no
+    hardcoded date, no patient identifier (data-shape-agnostic)."""
+    import inspect, pandas as pd
+    from backend.signal_engine import compute_last_24h_snapshot
+    assert list(inspect.signature(compute_last_24h_snapshot).parameters) == ["df", "window_hours"]
+    def _mk(base):
+        ts = pd.date_range(base, periods=48, freq="h")
+        return pd.DataFrame({"timestamp": ts, "hr_avg": [80]*48, "hr_min": [70]*48,
+                             "hr_max": [90]*48, "rr_avg": [18]*48, "rr_min": [14]*48, "rr_max": [22]*48})
+    assert pd.Timestamp(compute_last_24h_snapshot(_mk("2026-01-01"))["window_end"]) == pd.Timestamp("2026-01-02 23:00")
+    assert pd.Timestamp(compute_last_24h_snapshot(_mk("2027-09-15"))["window_end"]) == pd.Timestamp("2027-09-16 23:00")
+    print("PASS: UT.003 snapshot window derives from data last timestamp")
+
+
+def test_ut_004_snapshot_hr_rr_no_fabricated_alert():
+    """Snapshot reports HR and RR avg/min/max and fabricates NO alert count."""
+    import pandas as pd, json
+    from backend.signal_engine import compute_last_24h_snapshot
+    ts = pd.date_range("2026-03-01", periods=30, freq="h")
+    df = pd.DataFrame({"timestamp": ts, "hr_avg": [82]*30, "hr_min": [60]*30, "hr_max": [120]*30,
+                       "rr_avg": [19]*30, "rr_min": [12]*30, "rr_max": [28]*30})
+    snap = compute_last_24h_snapshot(df)
+    for chan in ("hr", "rr"):
+        for stat in ("avg", "min", "max"):
+            assert snap[chan][stat] is not None
+    assert "alert" not in json.dumps(snap).lower()
+    print("PASS: UT.004 snapshot HR/RR avg/min/max, no fabricated alert")
+
+
+def test_ut_005_single_per_episode_table():
+    """Only ONE per-episode table exists — the renderer builds the events table
+    once and there is no second per-episode representation."""
+    import inspect
+    from backend.pdf_render import generate_pdf
+    src = inspect.getsource(generate_pdf)
+    assert src.count("pt = Table(pt_data") == 1, "events table must be built exactly once"
+    print("PASS: UT.005 single per-episode table")
+
+
+def _ut_narrative_actions(month_key, patient):
+    """Narrative dict + actions for a MedHab patient-month (FIX 2/3/4 tests)."""
+    import asyncio
+    from backend.medhab_ingest import load_medhab_vitals, discover_report_windows
+    from backend.signal_engine import (apply_window, compute_stats, compute_data_quality,
+                                        compute_triage, compute_trend_assessment,
+                                        compute_positional_stats)
+    from backend.episodes import detect_episodes, compute_rollups
+    from backend.window_intelligence import detect_phases
+    from backend.narrative_ai import generate_narrative
+    from backend.quality_gates import run_quality_gates
+    data = load_medhab_vitals(_MEDHAB_FOLDER)
+    spec = next(s for s in discover_report_windows(_MEDHAB_FOLDER)
+                if s["patient"] == patient and s["month_key"] == month_key)
+    df = apply_window(data[patient].copy(), "custom", spec["start"], spec["end"])
+    ws, we = df["timestamp"].min(), df["timestamp"].max()
+    g = run_quality_gates(df, ws, we, downgrade_coverage_reject=True)
+    hr, rr = compute_stats(df); dq = compute_data_quality(df); eps = detect_episodes(df)
+    ro = compute_rollups(eps, df); tr = compute_triage(eps, ro.coupled_fraction, df=df)
+    td, _ = compute_trend_assessment(df, eps)
+    nd, actions, _ = asyncio.run(generate_narrative(
+        patient, ws.strftime("%Y-%m-%d"), we.strftime("%Y-%m-%d"), hr, rr, dq, eps, ro, tr, td, "",
+        use_llm_override=False, quality_warnings=g["warnings"], phases=detect_phases(df, eps),
+        bed_summary=None, activity_trend=None, positional_stats=compute_positional_stats(df)))
+    return nd, actions
+
+
+def test_ut_006_actions_match_table_one_per_type_own_channel():
+    """FIX 2/3/4: each condition's action bullet == its table row value (no
+    cross-surface drift), one bullet per condition type, and own-channel only
+    (no RR number on an HR bullet). Harris April fixture."""
+    from backend.config import PHASE_LABELS
+    nd, actions = _ut_narrative_actions("2026-04", "Harris")
+    rows = nd.get("phase_table_rows", [])
+    by_type = {}
+    for r in rows:
+        pt = r.get("phase_type")
+        if not pt:
+            continue
+        if pt not in by_type or (r.get("total_hours", 0) or 0) > (by_type[pt].get("total_hours", 0) or 0):
+            by_type[pt] = r
+    HR = {"low_hr", "very_low_hr", "elevated_hr", "high_hr", "very_high_hr"}
+    checked = 0
+    for pt, r in by_type.items():
+        label = PHASE_LABELS.get(pt)
+        bullets = [a for a in actions if a.startswith(label + " (") or a.startswith(label + ":")]
+        assert len(bullets) == 1, f"expected exactly one action for {label}, got {len(bullets)}"
+        b = bullets[0]
+        assert _utnum(b) == _utnum(r.get("average")), (
+            f"{pt}: action avg {_utnum(b)} != table avg {_utnum(r.get('average'))}")
+        # Own-channel: an HR bullet must carry no RR unit, and vice-versa.
+        if pt in HR:
+            assert "brpm" not in b, f"HR action leaks RR units: {b}"
+        else:
+            assert "bpm" not in b.replace("brpm", ""), f"RR action leaks HR units: {b}"
+        checked += 1
+    assert checked > 0
+    print(f"PASS: UT.006 actions match table, one per type, own channel ({checked})")
+
+
+def test_ut_007_rr_floor_excluded_from_statistics():
+    """FIX 6: sub-physiologic RR (e.g. noise-filter 0s) is excluded from the
+    statistics aggregation — Min RR never reads below the physiologic floor."""
+    import pandas as pd
+    from backend.signal_engine import compute_full_stats
+    from backend.config import RENDER_CONFIG
+    floor = RENDER_CONFIG["physiologic_bounds"]["rr_brpm"]["min"]
+    ts = pd.date_range("2026-02-01", periods=6, freq="h")
+    df = pd.DataFrame({"timestamp": ts,
+                       "hr_avg": [70]*6, "hr_min": [60]*6, "hr_max": [80]*6,
+                       "rr_avg": [0.1, 18, 19, 0.0, 20, 17],
+                       "rr_min": [0.1, 14, 15, 0.0, 16, 13],
+                       "rr_max": [0.1, 22, 24, 0.0, 25, 21]})
+    fs = compute_full_stats(df)
+    rr_rows = [r for r in fs.rows if "Breathing" in r.label or "RR" in r.label]
+    for r in rr_rows:
+        assert r.min >= floor, f"{r.label} min {r.min} below physiologic floor {floor}"
+    print("PASS: UT.007 RR floor excluded from statistics")
+
+
+def test_ut_008_priority_consistent_with_triage():
+    """FIX 5: the priority-by-triage map keeps the badge consistent with the
+    tier — a GREEN patient never reads HIGH priority."""
+    from backend.config import RENDER_CONFIG
+    m = RENDER_CONFIG["priority_by_triage"]
+    assert m["Green"] == "LOW" and m["Red"] == "HIGH", m
+    assert m["Green"] != "HIGH", "GREEN must not map to HIGH priority"
+    print("PASS: UT.008 priority consistent with triage")
+
+
+# =====================================================================
 # Standalone runner
 # =====================================================================
 
@@ -3654,6 +3861,15 @@ if __name__ == "__main__":
         test_r26_fix4_end_of_period_fires_for_end_loaded,
         test_r26_fix4_does_not_overfire_for_stable,
         test_r26_fix5_coverage_single_source_parity,
+        # Unified table + 24h snapshot
+        test_ut_001_unified_table_columns,
+        test_ut_002_metrics_condition_channel_matched,
+        test_ut_003_snapshot_window_from_last_timestamp_no_hardcode,
+        test_ut_004_snapshot_hr_rr_no_fabricated_alert,
+        test_ut_005_single_per_episode_table,
+        test_ut_006_actions_match_table_one_per_type_own_channel,
+        test_ut_007_rr_floor_excluded_from_statistics,
+        test_ut_008_priority_consistent_with_triage,
     ]
 
     passed = 0

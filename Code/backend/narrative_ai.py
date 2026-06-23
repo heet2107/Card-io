@@ -147,6 +147,63 @@ def build_coverage_string(data_quality, positional_stats=None) -> str:
     return "Coverage: " + fmt.format(sensor="Device", hours=total, total=expected, pct=pct)
 
 
+# ── Unified events-table helpers ─────────────────────────────────────────────
+
+def _epi_minmax(episodes, phase_type, attr, fn):
+    """Aggregate a structured per-channel min/max (attr = min_hr/max_hr/min_rr/
+    max_rr) over ONLY those episodes whose condition matches `phase_type` — the
+    same condition-matched gate R26 applied to the average. Replaces the
+    `_extract_vitals` 'Max' fallback, which matched BOTH channel segments of the
+    key_vitals string and leaked a respiratory value onto a heart-rate row.
+    Returns None when no matching episode carries the metric."""
+    from .config import CONDITION_TO_PHASE_TYPE
+    vals = [getattr(e, attr) for e in episodes
+            if getattr(e, attr, None) is not None
+            and CONDITION_TO_PHASE_TYPE.get(getattr(e, 'condition', None)) == phase_type]
+    return fn(vals) if vals else None
+
+
+def _fmt_clock(ts) -> str:
+    """Clock-only time. Drops ':00' on whole hours ('7 PM'); keeps minutes
+    otherwise ('7:30 PM'). No leading zero on the hour."""
+    import pandas as pd
+    t = pd.Timestamp(ts)
+    fmt = '%I %p' if t.minute == 0 else '%I:%M %p'
+    return t.strftime(fmt).lstrip('0')
+
+
+def _episode_time_span(ep) -> str:
+    """Clock window for an episode: start -> start + duration. A 1-hour episode
+    at 8:00 reads '8 AM to 9 AM' (the hour window), not '8 AM to 8 AM' (the
+    hourly aggregate's start==end timestamp)."""
+    import pandas as pd
+    start = pd.Timestamp(ep.start_time)
+    dur = int(getattr(ep, 'duration_hours', 1) or 1)
+    end = start + pd.Timedelta(hours=dur)
+    return f"{_fmt_clock(start)} to {_fmt_clock(end)}"
+
+
+def _first_condition_episode(episodes, phase_type):
+    """The earliest episode whose condition matches this finding's phase type.
+    Drives the Date (start date) and Time Span (clock window) cells."""
+    import pandas as pd
+    from .config import CONDITION_TO_PHASE_TYPE
+    matched = [e for e in episodes
+               if CONDITION_TO_PHASE_TYPE.get(getattr(e, 'condition', None)) == phase_type]
+    pool = matched or list(episodes)
+    if not pool:
+        return None
+    return min(pool, key=lambda e: pd.Timestamp(e.start_time))
+
+
+def _row_comment(phase_type: str) -> str:
+    """Per-finding Comment: the condition-keyed clinical-focus phrase, single-
+    sourced from clinical_guidance.review_phrase_by_phase_type (identical for
+    every row of the same condition; data-shape-agnostic, not per-patient)."""
+    return RENDER_CONFIG.get("clinical_guidance", {}).get(
+        "review_phrase_by_phase_type", {}).get(phase_type, "")
+
+
 # ── Phase Description Templates ──────────────────────────────────────────────
 
 def _phase_description(p_type, label, date_range, ph_hr, p_eps, hr_stats, rr_stats):
@@ -430,32 +487,39 @@ def generate_deterministic_narrative(
         epi_hr_mean = _epi_mean('avg_hr')
         epi_rr_mean = _epi_mean('avg_rr')
 
-        # R12 Fix 5: Clip peak values to physiologic bounds.
+        # Unified table — avg/min/max all sourced from THIS condition's own
+        # channel only, via condition-matched structured episode fields (no
+        # cross-channel 'Max' fallback). `peak` kept for back-compat. R12 Fix 5
+        # HR clipping retained; R22.B keeps RR unclipped.
         if is_hr_phase:
-            if 'low' in p.get('type', ''):
-                hr_mins = _extract_vitals(p_eps, 'Min HR')
-                min_hr = min(hr_mins) if hr_mins else hr_stats.min
-                clipped_hr, hr_was_clipped = _clip_physiologic(min_hr, "hr_bpm")
-                peak = f"{clipped_hr:.0f}{'*' if hr_was_clipped else ''} bpm"
-            else:
-                hr_maxs = _extract_vitals(p_eps, 'Max HR') or _extract_vitals(p_eps, 'Max')
-                max_hr = max(hr_maxs) if hr_maxs else hr_stats.max
-                clipped_hr, hr_was_clipped = _clip_physiologic(max_hr, "hr_bpm")
-                peak = f"{clipped_hr:.0f}{'*' if hr_was_clipped else ''} bpm"
+            is_low_hr = 'low' in p.get('type', '')
+            mn = _epi_minmax(p_eps, p_type, 'min_hr', min)
+            mx = _epi_minmax(p_eps, p_type, 'max_hr', max)
+            mn = mn if mn is not None else hr_stats.min
+            mx = mx if mx is not None else hr_stats.max
+            cmn, mn_clip = _clip_physiologic(mn, "hr_bpm")
+            cmx, mx_clip = _clip_physiologic(mx, "hr_bpm")
+            min_str = f"{cmn:.0f}{'*' if mn_clip else ''} bpm"
+            max_str = f"{cmx:.0f}{'*' if mx_clip else ''} bpm"
+            peak = min_str if is_low_hr else max_str
             avg_hr_val = epi_hr_mean if epi_hr_mean is not None else ph_hr
             clipped_avg, _ = _clip_physiologic(avg_hr_val, "hr_bpm")
             avg = f"{clipped_avg:.0f} bpm"
         elif is_rr_phase:
-            # R22.B: RR upper-bound clipping reversed. Sprint A's ingestion
-            # filter zeroes RR-without-HR noise; remaining values display raw.
-            rr_maxs = _extract_vitals(p_eps, 'Max RR') or _extract_vitals(p_eps, 'RR')
-            max_rr = max(rr_maxs) if rr_maxs else rr_stats.max
-            peak = f"{max_rr:.0f} brpm"
+            mn = _epi_minmax(p_eps, p_type, 'min_rr', min)
+            mx = _epi_minmax(p_eps, p_type, 'max_rr', max)
+            mn = mn if mn is not None else rr_stats.min
+            mx = mx if mx is not None else rr_stats.max
+            min_str = f"{mn:.0f} brpm"
+            max_str = f"{mx:.0f} brpm"
+            peak = max_str
             avg_rr_val = epi_rr_mean if epi_rr_mean is not None else ph_rr
             avg = f"{avg_rr_val:.0f} brpm"
         else:
             peak = "—"
             avg = "—"
+            min_str = "—"
+            max_str = "—"
 
         # FIX 33: Use reconciled hours — matches opening sentence exactly
         total_hours = counts['phase_hour_counts'][idx]
@@ -469,10 +533,15 @@ def generate_deterministic_narrative(
 
         d_start = pd.Timestamp(p['start_date'])
         d_end = pd.Timestamp(p['end_date'])
-        if d_start == d_end:
-            date_str = d_start.strftime('%b %d')
+        # Date = the finding's FIRST episode start date (single date); Time Span =
+        # that episode's clock window (clock only; end date implied by the wrap).
+        first_ep = _first_condition_episode(p_eps, p_type)
+        if first_ep is not None:
+            date_str = pd.Timestamp(first_ep.start_time).strftime('%b %d')
+            time_span = _episode_time_span(first_ep)
         else:
-            date_str = f"{d_start.strftime('%b %d')} to {d_end.strftime('%b %d')}"
+            date_str = d_start.strftime('%b %d')
+            time_span = ""
 
         # R22.D — span days for the row's Episodes/day cell. Inclusive of both
         # endpoints so a single-day phase reads "1 day".
@@ -482,6 +551,10 @@ def generate_deterministic_narrative(
             'category': PHASE_LABELS.get(p.get('type'), p.get('type')),
             'phase_type': p.get('type'),
             'peak': peak,
+            'min': min_str,
+            'max': max_str,
+            'time_span': time_span,
+            'comment': _row_comment(p.get('type')),
             'longest_continuous': longest_continuous,
             'longest_continuous_str': f"{longest_continuous}h",
             'total_hours': total_hours,
@@ -529,38 +602,40 @@ def generate_deterministic_narrative(
         b_longest = max((e.duration_hours for e in brief_eps), default=0)
         is_low = 'low' in pt
         is_rr = pt in ('elevated_rr', 'high_rr', 'very_high_rr')
-        if is_low:
-            hr_mins = _extract_vitals(brief_eps, 'Min HR')
-            min_hr = min(hr_mins) if hr_mins else hr_stats.min
-            cv, was_clipped = _clip_physiologic(min_hr, "hr_bpm")
-            b_peak = f"{cv:.0f}{'*' if was_clipped else ''} bpm"
-            avg_hrs = _extract_vitals(brief_eps, 'avg HR') or _extract_vitals(brief_eps, 'HR avg')
-            avg_val = sum(avg_hrs) / len(avg_hrs) if avg_hrs else hr_stats.mean
+        # Condition-matched structured min/max/avg (brief_eps are all the same
+        # condition, so the channel is pure); emit all three.
+        if is_low or not is_rr:
+            mn = _epi_minmax(brief_eps, pt, 'min_hr', min)
+            mx = _epi_minmax(brief_eps, pt, 'max_hr', max)
+            mn = mn if mn is not None else hr_stats.min
+            mx = mx if mx is not None else hr_stats.max
+            cmn, mn_clip = _clip_physiologic(mn, "hr_bpm")
+            cmx, mx_clip = _clip_physiologic(mx, "hr_bpm")
+            b_min = f"{cmn:.0f}{'*' if mn_clip else ''} bpm"
+            b_max = f"{cmx:.0f}{'*' if mx_clip else ''} bpm"
+            b_peak = b_min if is_low else b_max
+            hr_avgs = [e.avg_hr for e in brief_eps if e.avg_hr is not None]
+            avg_val = sum(hr_avgs) / len(hr_avgs) if hr_avgs else hr_stats.mean
             cv_avg, _ = _clip_physiologic(avg_val, "hr_bpm")
             b_avg = f"{cv_avg:.0f} bpm"
-        elif is_rr:
-            # R22.B: RR upper-bound clipping reversed; raw values display directly.
-            rr_maxs = _extract_vitals(brief_eps, 'Max RR') or _extract_vitals(brief_eps, 'RR')
-            max_rr = max(rr_maxs) if rr_maxs else rr_stats.max
-            b_peak = f"{max_rr:.0f} brpm"
-            avg_rrs = _extract_vitals(brief_eps, 'avg RR') or _extract_vitals(brief_eps, 'RR avg')
-            avg_val = sum(avg_rrs) / len(avg_rrs) if avg_rrs else rr_stats.mean
+        else:  # RR — R22.B: no upper-bound clipping; raw values display directly.
+            mn = _epi_minmax(brief_eps, pt, 'min_rr', min)
+            mx = _epi_minmax(brief_eps, pt, 'max_rr', max)
+            mn = mn if mn is not None else rr_stats.min
+            mx = mx if mx is not None else rr_stats.max
+            b_min = f"{mn:.0f} brpm"
+            b_max = f"{mx:.0f} brpm"
+            b_peak = b_max
+            rr_avgs = [e.avg_rr for e in brief_eps if e.avg_rr is not None]
+            avg_val = sum(rr_avgs) / len(rr_avgs) if rr_avgs else rr_stats.mean
             b_avg = f"{avg_val:.0f} brpm"
-        else:
-            hr_maxs = _extract_vitals(brief_eps, 'Max HR') or _extract_vitals(brief_eps, 'Max')
-            max_hr = max(hr_maxs) if hr_maxs else hr_stats.max
-            cv, was_clipped = _clip_physiologic(max_hr, "hr_bpm")
-            b_peak = f"{cv:.0f}{'*' if was_clipped else ''} bpm"
-            avg_hrs = _extract_vitals(brief_eps, 'avg HR') or _extract_vitals(brief_eps, 'HR avg')
-            avg_val = sum(avg_hrs) / len(avg_hrs) if avg_hrs else hr_stats.mean
-            cv_avg, _ = _clip_physiologic(avg_val, "hr_bpm")
-            b_avg = f"{cv_avg:.0f} bpm"
 
         starts = sorted(pd.Timestamp(e.start_time) for e in brief_eps)
         ends = sorted(pd.Timestamp(e.end_time) for e in brief_eps)
-        d0 = starts[0].strftime('%b %d')
-        d1 = ends[-1].strftime('%b %d')
-        b_date = f"{d0} to {d1}" if d0 != d1 else d0
+        # Date + Time Span from the finding's FIRST episode.
+        first_b = min(brief_eps, key=lambda e: pd.Timestamp(e.start_time))
+        b_date = pd.Timestamp(first_b.start_time).strftime('%b %d')
+        b_time_span = _episode_time_span(first_b)
         # R22.D — inclusive day span for Episodes/day rendering.
         b_period_days = max(1, (ends[-1].normalize() - starts[0].normalize()).days + 1)
 
@@ -568,6 +643,10 @@ def generate_deterministic_narrative(
             'category': f"{label} (brief)",
             'phase_type': pt,
             'peak': b_peak,
+            'min': b_min,
+            'max': b_max,
+            'time_span': b_time_span,
+            'comment': _row_comment(pt),
             'longest_continuous': b_longest,
             'longest_continuous_str': f"{b_longest}h",
             'total_hours': b_total_hours,
@@ -707,6 +786,7 @@ def generate_deterministic_narrative(
         episodes, phases, hr_stats, rr_stats, coupled_count > 0,
         bed_summary=bed_summary,
         activity_trend=activity_trend,
+        phase_table_rows=phase_table_rows,
     )
 
     return narrative_dict, actions
@@ -737,85 +817,49 @@ def _build_phase_actions(
     has_coupling: bool,
     bed_summary=None,
     activity_trend=None,
+    phase_table_rows: list[dict] | None = None,
 ) -> list[str]:
-    """FIX 2: Build clinical action bullets with per-phase vitals.
-    
-    Each bullet includes specific HR/RR values from that phase,
-    ensuring no two bullets are identical.
+    """Clinical action bullets — ONE per condition type, valued from the same
+    phase_table_rows the events table renders (so action numbers == table
+    numbers), own-channel only (no RR on a heart-rate bullet), with the vetted
+    condition-keyed review phrase.
     """
     import pandas as pd
+    from .config import PHASE_LABELS
 
     if not episodes:
         return []
 
+    phase_table_rows = phase_table_rows or []
     actions: list[str] = []
 
-    if phases:
-        from .config import PHASE_LABELS
-        display_phases = [p for p in phases if PHASE_LABELS.get(p.get("type"), None) is not None]
-        top_phases = sorted(display_phases, key=lambda x: x.get("phase_score", 0), reverse=True)[:4]
-        top_phases = sorted(top_phases, key=lambda x: x["start_date"])
-
-        for p in top_phases:
-            p_start = pd.Timestamp(p["start_date"])
-            p_end = pd.Timestamp(p["end_date"]) + pd.Timedelta(days=1)
-            p_eps = sorted(
-                [e for e in episodes
-                 if pd.Timestamp(e.start_time) >= p_start
-                 and pd.Timestamp(e.start_time) < p_end],
-                key=lambda e: e.severity_score, reverse=True,
-            )
-            if not p_eps:
-                continue
-
-            label = p.get("label", "Phase")
-            date_range = p.get("date_range", "")
-            ph_hr = p.get("hr_avg", 0)
-            ph_rr = p.get("rr_avg", 0)
-            ep_count = len(p_eps)
-
-            # Extract vitals from episodes for this phase
-            hr_mins = _extract_vitals(p_eps, "Min HR")
-            rr_maxs = _extract_vitals(p_eps, "Max RR")
-            min_hr = min(hr_mins) if hr_mins else hr_stats.min
-            max_rr = max(rr_maxs) if rr_maxs else rr_stats.max
-            # R22.B: RR upper-bound clipping reversed; show raw peak value.
-            rr_peak_str = f"{max_rr:.0f}"
-
-            p_coupled = any(e.cooccurrence for e in p_eps)
-
-            # Build a UNIQUE action with actual values
-            txt = f"{label} ({date_range}): {ep_count} {'episode' if ep_count == 1 else 'episodes'} detected"
-            txt += f" (HR avg {ph_hr:.0f} bpm, min {min_hr:.0f} bpm"
-            txt += f"; RR avg {ph_rr:.0f}, max {rr_peak_str} breaths/min). "
-
-            # Add condition-specific guidance
-            p_type = p.get("type", "mixed")
-            if p_type in ('low_hr', 'very_low_hr'):
-                txt += "Review heart rate lowering medications and check blood pressure."
-            elif p_type in ('elevated_hr', 'high_hr', 'very_high_hr'):
-                txt += "Evaluate for pain, infection, fever, dehydration, or rhythm change."
-            elif p_type == 'elevated_rr':
-                txt += "Assess respiratory status, oxygen levels, and fluid balance."
-            elif p_type == 'high_rr':
-                txt += "Assess respiratory status, oxygen levels, and possible infection or fluid overload."
-            elif p_type == 'very_high_rr':
-                txt += "Urgent: assess for acute respiratory compromise, hypoxia, and underlying cause."
-            else:
-                # Fallbacks for unknown/legacy phase types
-                if min_hr < 50:
-                    txt += "Review heart rate lowering medications and check blood pressure."
-                elif ph_hr > 80:
-                    txt += "Evaluate for pain, infection, fever, dehydration, or rhythm change."
-                elif max_rr > 24:
-                    txt += "Assess respiratory status, oxygen levels, and fluid balance."
-                else:
-                    txt += "Correlate with clinical context, medication timing, and symptom assessment."
-
-            if p_coupled:
-                txt += " Concurrent HR and RR abnormalities noted during this period."
-
-            actions.append(txt)
+    # FIX 2/3/4 — one bullet per condition TYPE, from the type's highest-burden
+    # row (the row the table headlines for that type). Values come straight from
+    # the row, so the action and the table never disagree; the row's avg/min/max
+    # are condition-matched (own channel), so an HR bullet never shows RR.
+    by_type: dict[str, dict] = {}
+    for r in phase_table_rows:
+        pt = r.get('phase_type')
+        if not pt:
+            continue
+        cur = by_type.get(pt)
+        if cur is None or (r.get('total_hours', 0) or 0) > (cur.get('total_hours', 0) or 0):
+            by_type[pt] = r
+    for r in sorted(by_type.values(), key=lambda x: -(x.get('total_hours', 0) or 0)):
+        pt = r['phase_type']
+        label = PHASE_LABELS.get(pt, pt)
+        is_low = 'low' in pt
+        avg = (r.get('average') or '').strip()
+        trig = ((r.get('min') if is_low else r.get('max')) or '').strip()
+        trig_word = 'min' if is_low else 'peak'
+        phrase = (r.get('comment') or '').strip()
+        detail = []
+        if avg:
+            detail.append(f"avg {avg}")
+        if trig:
+            detail.append(f"{trig_word} {trig}")
+        stat = f" ({', '.join(detail)})" if detail else ""
+        actions.append(f"{label}{stat}: {phrase}".strip())
 
     # Overall trajectory action if multiple display phases
     if phases:

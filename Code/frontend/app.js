@@ -44,6 +44,7 @@ const $aiToggle      = document.getElementById("ai-toggle");
 // ── State ───────────────────────────────────────────────────────────────────
 
 let currentReport = null;
+let currentPdfUrl = null;  // object URL for the inline PDF preview (revoked on regen)
 let patientMeta = {};  // Cache: { patientId: { locations, date_range, total_hours } }
 
 // ── Init ────────────────────────────────────────────────────────────────────
@@ -259,6 +260,9 @@ async function generateReport() {
     showLoading(true);
 
     try {
+        // Render the report NATIVELY in the app (HTML, with hover) — not an
+        // embedded PDF. Same report JSON drives the in-app view; Download PDF
+        // still produces the full PDF.
         const res = await fetch(`${API_BASE}/api/report/preview`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -315,11 +319,18 @@ async function downloadPDF() {
 
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
+        // Use the server's filename (CardioReport_<patient>_<Month_Year>.pdf) so
+        // the download name has the patient + month, single-sourced.
+        let fname = `CardioReport_${patientId}.pdf`;
+        const cd = res.headers.get("Content-Disposition") || "";
+        const m = cd.match(/filename="?([^"]+)"?/);
+        if (m) fname = m[1];
+
         const blob = await res.blob();
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = `CardioReport_${patientId}.pdf`;
+        a.download = fname;
         document.body.appendChild(a);
         a.click();
         // Delay cleanup to prevent browsers from aborting the download
@@ -471,56 +482,66 @@ function renderReport(r) {
         actionsList.appendChild(li);
     });
 
-    // Episodes table — use clinical-friendly names
+    // 24-hour snapshot (matches the PDF block)
+    const snapSection = document.getElementById("section-snapshot");
+    const snap = r.snapshot_24h;
+    if (snap) {
+        const snapCell = (v, unit) => (typeof v === "number") ? `${Math.round(v)} ${unit}` : "—";
+        document.getElementById("snapshot-tbody").innerHTML = `
+            <tr><td><strong>Heart Rate</strong></td><td>${snapCell(snap.hr && snap.hr.avg, "bpm")}</td><td>${snapCell(snap.hr && snap.hr.min, "bpm")}</td><td>${snapCell(snap.hr && snap.hr.max, "bpm")}</td></tr>
+            <tr><td><strong>Breathing</strong></td><td>${snapCell(snap.rr && snap.rr.avg, "brpm")}</td><td>${snapCell(snap.rr && snap.rr.min, "brpm")}</td><td>${snapCell(snap.rr && snap.rr.max, "brpm")}</td></tr>
+        `;
+        const snapNote = document.getElementById("snapshot-note");
+        if (snap.coverage_pct != null && snap.coverage_pct < 75) {
+            snapNote.textContent = `Limited data in the final 24h (${snap.hours_present}/${snap.expected_hours}h); values reflect available readings.`;
+            snapNote.style.display = "block";
+        } else {
+            snapNote.style.display = "none";
+        }
+        snapSection.style.display = "block";
+    } else {
+        snapSection.style.display = "none";
+    }
+
+    // Unified episodic events table — same per-finding rows as the PDF
+    // (narrative.phase_table_rows), burden-weighted; bare-number metrics.
     const tbody = document.getElementById("episodes-tbody");
     const noEp = document.getElementById("no-episodes");
+    const epWrap = document.getElementById("episodes-table").closest(".table-wrapper");
     tbody.innerHTML = "";
-
-    if (r.episodes && r.episodes.length > 0) {
-        document.querySelector(".table-wrapper").style.display = "block";
+    const ptRows = (r.narrative && r.narrative.phase_table_rows) ? r.narrative.phase_table_rows.slice() : [];
+    // Severity tier first (most important), then chronological within a tier.
+    const SEV = {very_high_hr:0, very_low_hr:0, very_high_rr:0, high_hr:1, high_rr:1,
+                 low_hr:2, elevated_hr:3, elevated_rr:3};
+    const sevRank = (row) => SEV[row.phase_type] != null ? SEV[row.phase_type] : 9;
+    const dnum = (row) => { const t = Date.parse((row.date || "").split(" to ")[0] + " 2000"); return isNaN(t) ? 8.64e15 : t; };
+    ptRows.sort((a, b) => (sevRank(a) - sevRank(b)) || (dnum(a) - dnum(b)));
+    const bare = (s) => String(s == null ? "" : s).replace(" bpm", "").replace(" brpm", "").trim();
+    if (ptRows.length > 0) {
+        if (epWrap) epWrap.style.display = "block";
         noEp.style.display = "none";
-
-        r.episodes.forEach((ep) => {
+        ptRows.forEach((row) => {
             const tr = document.createElement("tr");
-
-            // Severity class
-            if (ep.severity_band === "S2" || ep.severity_band === "S3") {
-                tr.className = "severity-high";
-            } else if (ep.severity_band === "S1") {
-                tr.className = "severity-moderate";
-            }
-
-            // Clinical-friendly condition name (matches PDF)
-            const displayCondition = CONDITION_DISPLAY[ep.condition] || ep.condition;
-
-            // Time window format matching 12h AM/PM: "10/27 5:00 AM (1h)"
-            const timeWindow = formatEpWindow(ep.start_time, ep.end_time, ep.duration_hours);
-
-            // Duration with "h" suffix matching PDF
-            const durStr = `${ep.duration_hours}h`;
-
-            // Night/Day from episode start hour (7 PM to 7 AM = N, else D)
-            const ndLabel = computeNightDay(ep.start_time);
-
-            // Split key_vitals into HR and RR
-            const { hr, rr } = parseKeyVitals(ep.key_vitals);
-
-            // Comments column (same label as PDF)
-            const comment = ep.qualifier_phrase || ep.concern_phrase || "";
-
+            const cond = String(row.category || "").replace(" (brief)", "");
+            // Bold linking: condition keyword + triggering metric (Max for high
+            // conditions, Min for low) bold, so the eye connects condition->number.
+            const isLow = String(row.phase_type || "").includes("low");
+            const minCell = bare(row.min), maxCell = bare(row.max);
             tr.innerHTML = `
-                <td><strong>${escapeHtml(displayCondition)}</strong></td>
-                <td>${escapeHtml(timeWindow)}</td>
-                <td>${durStr}</td>
-                <td class="nd-cell">${ndLabel}</td>
-                <td>${escapeHtml(hr)}</td>
-                <td>${escapeHtml(rr)}</td>
-                <td>${escapeHtml(truncate(comment, 120))}</td>
+                <td>${escapeHtml(row.date || "")}</td>
+                <td>${escapeHtml(row.time_span || "")}</td>
+                <td>${row.total_hours != null ? row.total_hours : ""}h</td>
+                <td>${row.episodes != null ? row.episodes : ""}</td>
+                <td><strong>${escapeHtml(cond)}</strong></td>
+                <td>${escapeHtml(bare(row.average))}</td>
+                <td>${isLow ? "<strong>" + escapeHtml(minCell) + "</strong>" : escapeHtml(minCell)}</td>
+                <td>${isLow ? escapeHtml(maxCell) : "<strong>" + escapeHtml(maxCell) + "</strong>"}</td>
+                <td>${escapeHtml(row.comment || "")}</td>
             `;
             tbody.appendChild(tr);
         });
     } else {
-        document.querySelector(".table-wrapper").style.display = "none";
+        if (epWrap) epWrap.style.display = "none";
         noEp.style.display = "block";
     }
 

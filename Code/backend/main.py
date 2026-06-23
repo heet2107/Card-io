@@ -34,7 +34,7 @@ from .signal_engine import (
     apply_window, compute_stats, compute_full_stats, compute_data_quality,
     compute_data_resolution, compute_triage, compute_trend_assessment,
     compute_action_posture, compute_positional_stats, compute_activity_data,
-    compute_end_of_period_clustering,
+    compute_end_of_period_clustering, compute_last_24h_snapshot,
 )
 from .medhab_ingest import load_medhab_vitals, discover_report_windows
 from .episodes import detect_episodes, compute_rollups
@@ -247,6 +247,11 @@ async def _run_pipeline(req: ReportRequest) -> tuple[dict, "pd.DataFrame"]:
     report_priority = compute_report_priority(
         episodes, raw_phases, max_severity_score, quality_warnings
     )
+    # FIX 5 — keep the priority badge consistent with the triage tier (no
+    # GREEN + HIGH contradiction). SKIP (data-quality) is preserved.
+    if report_priority != "SKIP":
+        from .config import RENDER_CONFIG as _RC
+        report_priority = _RC.get("priority_by_triage", {}).get(triage, report_priority)
 
     # ── Step 9b: Detect sensor type & load bed data ──────────────────────
     sensor_type = "chair"
@@ -404,6 +409,7 @@ async def _run_pipeline(req: ReportRequest) -> tuple[dict, "pd.DataFrame"]:
         "report_date": (window_end_ts + pd.Timedelta(days=1)).strftime("%Y-%m-%d"),
         "data_resolution": data_resolution,
         "coverage_summary": coverage_summary,
+        "snapshot_24h": compute_last_24h_snapshot(df),
         "disclaimer": "Decision-support summary derived from longitudinal vital sign trends; interpret in clinical context.",
         "hr_summaries": hr_stats.model_dump() if hasattr(hr_stats, "model_dump") else hr_stats,
         "rr_summaries": rr_stats.model_dump() if hasattr(rr_stats, "model_dump") else rr_stats,
@@ -547,8 +553,13 @@ async def report_pdf(req: ReportRequest):
 
     pid = _v(report_obj, "patient_id")
     ws = _v(report_obj, "window_start")
-    we = _v(report_obj, "window_end")
-    filename = f"CardioReport_{pid}_{ws}_{we}.pdf"
+    # Filename: CardioReport_<patient>_<Month_Year> (easy for users).
+    try:
+        import pandas as _pd
+        month_label = _pd.Timestamp(ws).strftime("%B_%Y") if ws else ""
+    except Exception:
+        month_label = ""
+    filename = f"CardioReport_{pid}_{month_label}.pdf" if month_label else f"CardioReport_{pid}.pdf"
     
     return Response(
         content=pdf_bytes,

@@ -84,6 +84,16 @@ class Episode(BaseModel):
     # episode).
     avg_hr: Optional[float] = None
     avg_rr: Optional[float] = None
+    # Structured per-channel min/max for this episode's own hours — same
+    # condition-matched basis as avg_hr/avg_rr. The unified events table reads
+    # these instead of parsing the key_vitals string with _extract_vitals, whose
+    # 'Max' fallback matched BOTH channels and leaked an RR max onto an HR row.
+    # None when the metric was absent for the whole episode (HR fields None on an
+    # RR-only episode and vice-versa); render None as "—".
+    min_hr: Optional[float] = None
+    max_hr: Optional[float] = None
+    min_rr: Optional[float] = None
+    max_rr: Optional[float] = None
 
 
 class EpisodeRollups(BaseModel):

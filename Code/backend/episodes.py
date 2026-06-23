@@ -202,6 +202,12 @@ def detect_episodes(df: pd.DataFrame) -> list[Episode]:
             return float(v) if v is not None and not pd.isna(v) else None
         ep_avg_hr = _num(ep_dict.get('hr_avg'))
         ep_avg_rr = _num(ep_dict.get('rr_avg'))
+        # Structured per-channel min/max, same NaN-guard. Read condition-matched
+        # downstream so an RR max never reaches an HR row (and vice-versa).
+        ep_min_hr = _num(ep_dict.get('hr_min'))
+        ep_max_hr = _num(ep_dict.get('hr_max'))
+        ep_min_rr = _num(ep_dict.get('rr_min'))
+        ep_max_rr = _num(ep_dict.get('rr_max'))
 
         hr_avg_val = _kv(ep_dict.get('hr_avg'))
         hr_min_val = _kv(ep_dict.get('hr_min', ep_dict.get('hr_avg')))
@@ -229,6 +235,10 @@ def detect_episodes(df: pd.DataFrame) -> list[Episode]:
             qualifier_phrase="Clinical coupling: low HR + elevated RR" if ep_dict["cooccurrence"] else "",
             avg_hr=ep_avg_hr,
             avg_rr=ep_avg_rr,
+            min_hr=ep_min_hr,
+            max_hr=ep_max_hr,
+            min_rr=ep_min_rr,
+            max_rr=ep_max_rr,
         ))
 
     # Sort: Severity descending, then Chronological

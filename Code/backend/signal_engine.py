@@ -13,8 +13,8 @@ import numpy as np
 import pandas as pd
 
 from .config import (
-    settings, TrendLabels, TriageLabels, ActionPostureLabels, 
-    Conditions, ChartColors as CC, Locations
+    settings, TrendLabels, TriageLabels, ActionPostureLabels,
+    Conditions, ChartColors as CC, Locations, RENDER_CONFIG
 )
 from .models import VitalStats, DataQuality
 
@@ -52,10 +52,15 @@ def apply_window(df: pd.DataFrame, range_type: str,
 
 def compute_stats(df: pd.DataFrame) -> tuple[VitalStats, VitalStats]:
     """Compute HR and RR summary statistics from actual data."""
-    def _stats(avg_col: str, min_col: str, max_col: str) -> VitalStats:
-        avg = df[avg_col].dropna()
-        mn = df[min_col].dropna()
-        mx = df[max_col].dropna()
+    def _stats(avg_col: str, min_col: str, max_col: str, lo=None) -> VitalStats:
+        def _clean(col):
+            s = df[col].dropna()
+            # FIX 6 — exclude sub-physiologic artifact (e.g. the 0s the RR noise
+            # filter writes when HR is missing) from the stats aggregation.
+            return s[s >= lo] if lo is not None else s
+        avg = _clean(avg_col)
+        mn = _clean(min_col)
+        mx = _clean(max_col)
         return VitalStats(
             mean=round(float(avg.mean()), 1) if len(avg) else 0,
             min=round(float(mn.min()), 1) if len(mn) else 0,
@@ -64,9 +69,54 @@ def compute_stats(df: pd.DataFrame) -> tuple[VitalStats, VitalStats]:
             p95=round(float(avg.quantile(0.95)), 1) if len(avg) else 0,
         )
 
+    rr_floor = RENDER_CONFIG.get("physiologic_bounds", {}).get("rr_brpm", {}).get("min", 6)
     hr = _stats("hr_avg", "hr_min", "hr_max")
-    rr = _stats("rr_avg", "rr_min", "rr_max")
+    rr = _stats("rr_avg", "rr_min", "rr_max", lo=rr_floor)
     return hr, rr
+
+
+def compute_last_24h_snapshot(df: pd.DataFrame, window_hours: int = 24) -> Optional[dict]:
+    """Rolling last-24h snapshot, derived from the DATA's own final timestamp
+    (no calendar boundary, no hardcoded date, no patient identity).
+
+    Returns HR and RR avg/min/max over the final `window_hours` of available
+    data plus a coverage note for graceful thin-tail handling. No alerts are
+    fabricated. Returns None when the frame is empty; avg/min/max are None for a
+    channel with no data in the window so consumers render "—".
+    """
+    if df is None or df.empty or "timestamp" not in df.columns:
+        return None
+    last_ts = df["timestamp"].max()
+    if pd.isna(last_ts):
+        return None
+    cutoff = last_ts - timedelta(hours=window_hours)
+    win = df[df["timestamp"] > cutoff]
+    if win.empty:
+        return None
+
+    rr_floor = RENDER_CONFIG.get("physiologic_bounds", {}).get("rr_brpm", {}).get("min", 6)
+
+    def _chan(avg_col, min_col, max_col, lo=None):
+        def _clean(col):
+            s = win[col].dropna() if col in win.columns else win.iloc[0:0]
+            return s[s >= lo] if lo is not None else s
+        avg, mn, mx = _clean(avg_col), _clean(min_col), _clean(max_col)
+        return {
+            "avg": round(float(avg.mean()), 1) if len(avg) else None,
+            "min": round(float(mn.min()), 1) if len(mn) else None,
+            "max": round(float(mx.max()), 1) if len(mx) else None,
+        }
+
+    hours_present = int(win["timestamp"].dt.floor("h").nunique())
+    return {
+        "window_start": pd.Timestamp(win["timestamp"].min()).isoformat(),
+        "window_end": pd.Timestamp(last_ts).isoformat(),
+        "expected_hours": window_hours,
+        "hours_present": hours_present,
+        "coverage_pct": round(100 * hours_present / window_hours, 1),
+        "hr": _chan("hr_avg", "hr_min", "hr_max"),
+        "rr": _chan("rr_avg", "rr_min", "rr_max", lo=rr_floor),
+    }
 
 
 def compute_full_stats(df: pd.DataFrame):
@@ -80,6 +130,7 @@ def compute_full_stats(df: pd.DataFrame):
     from .config import STATS_LABELS
 
     rows = []
+    rr_floor = RENDER_CONFIG.get("physiologic_bounds", {}).get("rr_brpm", {}).get("min", 6)
     # Use labels from config
     for col, label in [
         ("hr_avg", "Avg HR (bpm)"),
@@ -90,6 +141,9 @@ def compute_full_stats(df: pd.DataFrame):
         ("rr_max", "Max RR (breaths/min)"),
     ]:
         s = df[col].dropna()
+        # FIX 6 — drop sub-physiologic RR artifact (e.g. noise-filter 0s).
+        if col.startswith("rr_"):
+            s = s[s >= rr_floor]
         display_label = STATS_LABELS.get(label, label)
         if len(s) == 0:
             rows.append(StatsRow(label=display_label, mean=0, min=0, max=0, p5=0, p95=0))
