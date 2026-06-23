@@ -3672,6 +3672,22 @@ def test_ut_007_rr_floor_excluded_from_statistics():
     print("PASS: UT.007 RR floor excluded from statistics")
 
 
+def test_ut_009_pdf_has_summary_line_and_tier_consistent_grade():
+    """FIX 1/2: the PDF renders the overview summary line + a priority grade, and
+    the grade is tier-consistent — a GREEN patient's PDF shows the grade but never
+    'High'. Taylor April is GREEN."""
+    import io as _io
+    from PyPDF2 import PdfReader
+    res = _MH("2026-04", "Taylor")
+    text = "\n".join(p.extract_text() for p in PdfReader(_io.BytesIO(res["pdf_bytes"])).pages)
+    assert "episodic event" in text.lower(), "PDF must render the overview summary line"
+    assert "Priority grade:" in text, "PDF must render the priority grade"
+    assert res["triage"] == "Green"
+    assert "Priority grade: High" not in text, "GREEN patient must not read HIGH grade"
+    assert "Priority grade: Low" in text, "GREEN patient grade should be Low"
+    print("PASS: UT.009 PDF summary line + tier-consistent grade")
+
+
 def test_ut_008_priority_consistent_with_triage():
     """FIX 5: the priority-by-triage map keeps the badge consistent with the
     tier — a GREEN patient never reads HIGH priority."""
@@ -3870,6 +3886,7 @@ if __name__ == "__main__":
         test_ut_006_actions_match_table_one_per_type_own_channel,
         test_ut_007_rr_floor_excluded_from_statistics,
         test_ut_008_priority_consistent_with_triage,
+        test_ut_009_pdf_has_summary_line_and_tier_consistent_grade,
     ]
 
     passed = 0

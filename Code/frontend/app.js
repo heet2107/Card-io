@@ -399,8 +399,11 @@ function renderReport(r) {
     }
     // Narrative — handle structured dict (deterministic) or plain string (LLM)
     if (r.narrative && typeof r.narrative === "object" && r.narrative.opening !== undefined) {
-        // Structured narrative: opening + phase_lines + closing
-        let narrativeHtml = `<p>${escapeHtml(r.narrative.opening)}</p>`;
+        // Structured narrative: opening + phase_lines + closing. Append the
+        // tier-consistent priority grade so the summary line matches the PDF.
+        const grade = (r.report_priority || "").charAt(0) + (r.report_priority || "").slice(1).toLowerCase();
+        const gradeStr = grade ? `  <strong>Priority grade: ${escapeHtml(grade)}</strong>` : "";
+        let narrativeHtml = `<p>${escapeHtml(r.narrative.opening)}${gradeStr}</p>`;
         if (r.narrative.phase_lines && r.narrative.phase_lines.length > 0) {
             narrativeHtml += "<div style='margin: 4px 0 8px 16px; padding: 0;'>";
             r.narrative.phase_lines.forEach(line => {

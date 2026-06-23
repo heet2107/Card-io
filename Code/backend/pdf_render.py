@@ -1699,6 +1699,19 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
         # 30-day summary (metrics) table.
         elements.extend(_build_snapshot_24h_elements(report, st, page_w))
 
+        # FIX 1 — concise overview line + priority grade, matching the web app
+        # (same engine data: narrative.opening + tier-consistent report_priority).
+        # The grade is derived from triage (config priority_by_triage), so it can
+        # never contradict the tier (GREEN never reads HIGH).
+        _overview = _v(narrative, 'opening', '') if isinstance(narrative, dict) else ''
+        _grade = str(_v(report, 'report_priority', '') or '').title()
+        if _overview or _grade:
+            _line = _html.escape(_overview)
+            if _grade:
+                _line = (_line + "  " if _line else "") + f"<b>Priority grade: {_grade}</b>"
+            elements.append(Paragraph(_line, st["body"]))
+            elements.append(Spacer(1, 4))
+
         metrics_header = [
             Paragraph("<b>Episodic Events</b>", st["table_header"]),
             Paragraph("<b>Total Hours</b>", st["table_header"]),
