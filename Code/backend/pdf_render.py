@@ -587,9 +587,9 @@ def _build_snapshot_24h_elements(report, st, page_w):
     if summary:
         elems.append(Spacer(1, 2))
         elems.append(Paragraph(_html.escape(summary), st["body"]))
-    elems.append(Spacer(1, 3))
+    elems.append(Spacer(1, 2))
     elems += _build_24h_events_subtable(snap, st)
-    elems.append(Spacer(1, 3))
+    elems.append(Spacer(1, 2))
     return elems
 
 
@@ -1097,6 +1097,88 @@ _PHASE_BLOCK_COLORS = {
 }
 
 
+def _build_threshold_legend(st, include_note=True):
+    """Clinical Alerting Thresholds color key (Round 28: rendered at the TOP of
+    the report, above the phase strip, so the color key precedes the strip it
+    explains). Module-level so it can be placed before the strip is built.
+
+    ``include_note=False`` renders just the title + color swatches (the compact
+    reference band used at the top); the episode-definition note is rendered
+    separately at the bottom so the top band stays small and the strip sits high.
+    """
+    elems = []
+    # Compact title (smaller than a section head — this is a reference band).
+    title_style = ParagraphStyle('thresh_title', parent=st['body_bold'], fontSize=8, leading=9, spaceAfter=1)
+    elems.append(Paragraph("Clinical Alerting Thresholds", title_style))
+
+    # Each threshold uses its own distinct shade from THRESHOLD_LEGEND_COLORS.
+    from .config import THRESHOLD_LEGEND_COLORS as _TLC
+    threshold_rows_data = [
+        ('Very Low HR', f'< {int(settings.severe_brady_min)} bpm', _TLC["very_low_hr"]),
+        ('Low HR', f'< {int(settings.brady_hr_avg)} bpm', _TLC["low_hr"]),
+        ('Elevated HR', f'> {int(settings.elevated_hr_avg)} bpm', _TLC["elevated_hr"]),
+        ('High HR', f'> {int(settings.tachy_hr_avg)} bpm', _TLC["high_hr"]),
+        ('Very High HR', f'> {int(settings.very_high_hr_avg)} bpm', _TLC["very_high_hr"]),
+        ('Elevated Breathing', f'> {int(settings.tachy_rr_avg)} brpm', _TLC["elevated_rr"]),
+        ('High Breathing', f'> {int(settings.high_rr_avg)} brpm', _TLC["high_rr"]),
+        ('Very High Breathing', f'> {int(settings.very_high_rr_avg)} brpm', _TLC["very_high_rr"]),
+    ]
+
+    # Laid out as 4 columns × 2 rows (8 cells) so it stays a compact reference
+    # band, not a focal section.
+    swatch_style = ParagraphStyle('swatch_lbl', parent=st['legend'], fontSize=5.5, leading=6.5)
+    cells_per_row = 4
+    arranged_rows = []
+    for i in range(0, len(threshold_rows_data), cells_per_row):
+        row_cells = []
+        for j in range(cells_per_row):
+            idx = i + j
+            if idx >= len(threshold_rows_data):
+                row_cells += [None, None, None]
+                continue
+            cell = threshold_rows_data[idx]
+            swatch = Table([['']],
+                colWidths=[0.13 * inch], rowHeights=[0.09 * inch],
+                style=TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, -1), _hex(cell[2])),
+                    ('BOX', (0, 0), (-1, -1), 0.25, _hex('#666666')),
+                ]))
+            row_cells += [
+                swatch,
+                Paragraph(f"<b>{cell[0]}</b>&nbsp;{cell[1]}", swatch_style),
+            ]
+        arranged_rows.append(row_cells)
+
+    col_widths = [0.18 * inch, 1.62 * inch] * cells_per_row
+    thresh_tbl = Table(arranged_rows, colWidths=col_widths)
+    thresh_tbl.setStyle(TableStyle([
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 1),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 1),
+        ('TOPPADDING', (0, 0), (-1, -1), 0),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+    ]))
+    elems.append(thresh_tbl)
+    if include_note:
+        elems.append(Spacer(1, 2))
+        elems.append(_threshold_definition_note(st))
+    return elems
+
+
+def _threshold_definition_note(st):
+    """The 'what counts as an episodic event' definition line. Rendered at the
+    bottom of the report (near the strip-index legend), kept out of the compact
+    top color-key band."""
+    return Paragraph(
+        f"<i>Episodic event: threshold exceeded continuously for &ge;&nbsp;"
+        f"{int(settings.episodic_event_min_hours)}&nbsp;hour. "
+        f"Episodes separated by &le;&nbsp;{int(settings.episode_merge_gap_hours)}&nbsp;hour "
+        f"of normal vitals are counted as the same event. "
+        f"Brief threshold crossings that do not sustain are not flagged.</i>",
+        st["legend"]
+    )
+
+
 def render_phase_blocks_bar(display_phases, content_width_inches, st):
     """Clinical-status bar as phase BLOCKS — one solid colored block per finding,
     width proportional to its days, labeled condition + date range. Mirrors the
@@ -1114,18 +1196,35 @@ def render_phase_blocks_bar(display_phases, content_width_inches, st):
             return 1
 
     total = sum(_days(p) for p in blocks) or 1
-    widths = [(_days(p) / total) * content_width_inches * inch for p in blocks]
+    n = len(blocks)
+    # R28.1 readability — a condition label must never wrap mid-word
+    # ("Elevate d") and the date must never spill below the box. Give every
+    # block a readable minimum width; if duration-proportional widths would push
+    # any block below that minimum (the dense 90-day case with many episodes),
+    # distribute the width EVENLY so every label fits. Order is preserved either
+    # way — only the widths change, never which blocks show or their colors.
+    MIN_BLOCK_W = 0.62  # inches — holds the longest single word ("Breathing") at 7pt
+    prop_in = [(_days(p) / total) * content_width_inches for p in blocks]
+    if min(prop_in) < MIN_BLOCK_W:
+        widths_in = [content_width_inches / n] * n   # equal width, all readable
+    else:
+        widths_in = prop_in                          # duration-proportional
+    widths = [w * inch for w in widths_in]
     cells = []
     for p in blocks:
         ptype = _v(p, 'type', '')
         _bg, fg = _PHASE_BLOCK_COLORS.get(ptype, ("#6B7280", "#FFFFFF"))
         label = _html.escape(str(_v(p, 'label', ptype) or ptype))
         dr = _html.escape(str(_v(p, 'date_range', '') or ''))
+        # fontSize 7 + splitLongWords=0: the label wraps only on whole words (so
+        # "Elevated Heart Rate" breaks to at most two whole-word lines) and never
+        # splits a word; the date sits on its own line inside the box.
         s = ParagraphStyle(f"pb_{ptype}", parent=st['phase_label'], alignment=1,
-                           textColor=HexColor(fg), fontSize=8, leading=10)
+                           textColor=HexColor(fg), fontSize=7, leading=8.5,
+                           splitLongWords=0)
         cells.append(Paragraph(
-            f"<b>{label}</b><br/><font size='6'>{dr} ({_days(p)}d)</font>", s))
-    tbl = Table([cells], colWidths=widths, rowHeights=[0.52 * inch])
+            f"<b>{label}</b><br/><font size='5.5'>{dr} ({_days(p)}d)</font>", s))
+    tbl = Table([cells], colWidths=widths, rowHeights=[0.48 * inch])
     style = [
         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
         ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
@@ -1657,6 +1756,14 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
         for num_idx, (orig_idx, row) in enumerate(_sorted_pre[:max_rows_pre], start=1):
             phase_number_map[orig_idx] = num_idx
 
+    # R28.1 — Clinical Alerting Thresholds legend at the TOP, above the phase
+    # strip: the strip's colors carry the condition meaning, so the key must
+    # precede the thing it explains (moved here from the end of the report;
+    # rendered once, not duplicated). Compact color key only — the episode
+    # definition note rides at the bottom to keep this band small.
+    elements.extend(_build_threshold_legend(st, include_note=False))
+    elements.append(Spacer(1, 2))
+
     # FIX 6: Episode timeline bar — red bars on gray for episodic events
     all_eps = _v(report, "episodes", [])
     if all_eps:
@@ -1673,10 +1780,10 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
             ws = _v(report, 'window_start', '')
             we = _v(report, 'window_end', '')
             ep_timeline = chart_episode_timeline_for_pdf(all_eps, ws, we)
-            elements.append(Image(io.BytesIO(ep_timeline), width=page_w, height=0.45 * inch))
+            elements.append(Image(io.BytesIO(ep_timeline), width=page_w, height=0.30 * inch))
         except Exception:
             pass
-        elements.append(Spacer(1, 4))
+        elements.append(Spacer(1, 2))
 
     # Phase timeline bar — three cases:
     # 1. display_phases exist → colored segment timeline
@@ -1707,7 +1814,7 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
         blocks_bar = render_phase_blocks_bar(display_phases, strip_width, st)
         if blocks_bar is not None:
             elements.append(blocks_bar)
-        elements.append(Spacer(1, 4))
+        elements.append(Spacer(1, 2))
 
     elif all_eps:
         # Case 2: Episodes exist but no sustained phases — amber bar
@@ -2184,77 +2291,9 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
         elems.append(Spacer(1, 2))
         return elems
 
-    def _make_threshold_legend():
-        elems = []
-        elems.append(Spacer(1, 3))
-        elems.append(Paragraph("Clinical Alerting Thresholds", st["body_bold"]))
-
-        # Build 2-column color-swatch table
-        # R15 A2: added High Breathing and Very High Breathing rows
-        # R19 C: each threshold uses its own distinct shade from THRESHOLD_LEGEND_COLORS.
-        # Pre-R19 recycled 5 candlestick severity colors across 8 swatches, so
-        # Very Low HR and Very High HR rendered identical (Sajol flagged on May 4).
-        from .config import THRESHOLD_LEGEND_COLORS as _TLC
-        threshold_rows_data = [
-            ('Very Low HR', f'< {int(settings.severe_brady_min)} bpm', _TLC["very_low_hr"]),
-            ('Low HR', f'< {int(settings.brady_hr_avg)} bpm', _TLC["low_hr"]),
-            ('Elevated HR', f'> {int(settings.elevated_hr_avg)} bpm', _TLC["elevated_hr"]),
-            ('High HR', f'> {int(settings.tachy_hr_avg)} bpm', _TLC["high_hr"]),
-            ('Very High HR', f'> {int(settings.very_high_hr_avg)} bpm', _TLC["very_high_hr"]),
-            ('Elevated Breathing', f'> {int(settings.tachy_rr_avg)} brpm', _TLC["elevated_rr"]),
-            ('High Breathing', f'> {int(settings.high_rr_avg)} brpm', _TLC["high_rr"]),
-            ('Very High Breathing', f'> {int(settings.very_high_rr_avg)} brpm', _TLC["very_high_rr"]),
-        ]
-
-        # R15 C2/C3: laid out as 4 columns × 2 rows (8 cells) to fit on page 1
-        # alongside the new strip-index legend, without regressing the 2-page invariant.
-        swatch_style = ParagraphStyle('swatch_lbl', parent=st['legend'], fontSize=6, leading=7)
-        # Pack 4 cells per row instead of 2 so 8 thresholds = 2 visual rows (was 4)
-        cells_per_row = 4
-        arranged_rows = []
-        for i in range(0, len(threshold_rows_data), cells_per_row):
-            row_cells = []
-            for j in range(cells_per_row):
-                idx = i + j
-                if idx >= len(threshold_rows_data):
-                    row_cells += [None, None, None]
-                    continue
-                cell = threshold_rows_data[idx]
-                swatch = Table([['']],
-                    colWidths=[0.14 * inch], rowHeights=[0.10 * inch],
-                    style=TableStyle([
-                        ('BACKGROUND', (0, 0), (-1, -1), _hex(cell[2])),
-                        ('BOX', (0, 0), (-1, -1), 0.25, _hex('#666666')),
-                    ]))
-                row_cells += [
-                    swatch,
-                    Paragraph(f"<b>{cell[0]}</b>&nbsp;{cell[1]}", swatch_style),
-                ]
-            arranged_rows.append(row_cells)
-
-        # 4 cells per row = 8 columns: (swatch, label) × 4
-        col_widths = [0.18 * inch, 1.62 * inch] * cells_per_row
-        thresh_tbl = Table(arranged_rows, colWidths=col_widths)
-        thresh_tbl.setStyle(TableStyle([
-            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            ('LEFTPADDING', (0, 0), (-1, -1), 1),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 1),
-            ('TOPPADDING', (0, 0), (-1, -1), 0),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
-        ]))
-        elems.append(thresh_tbl)
-        elems.append(Spacer(1, 2))
-        elems.append(Paragraph(
-            f"<i>Episodic event: threshold exceeded continuously for &ge;&nbsp;"
-            f"{int(settings.episodic_event_min_hours)}&nbsp;hour. "
-            f"Episodes separated by &le;&nbsp;{int(settings.episode_merge_gap_hours)}&nbsp;hour "
-            f"of normal vitals are counted as the same event. "
-            f"Brief threshold crossings that do not sustain are not flagged.</i>",
-            st["legend"]
-        ))
-        return elems
-
-    placed_threshold_legend = False
+    # The Clinical Alerting Thresholds legend is rendered once at the TOP of the
+    # report (above the phase strip) via the module-level _build_threshold_legend.
+    # It is intentionally NOT repeated at the bottom.
 
     if not is_long_full_period:
         # Page-fit: page 1 carries the textual decision content (snapshot, summary,
@@ -2266,8 +2305,7 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
             elements.extend(_make_findings_elements())
             elements.extend(_make_candlestick_elements())
             elements.extend(_make_strip_index_legend())
-            elements.extend(_make_threshold_legend())
-            placed_threshold_legend = True
+            elements.append(_threshold_definition_note(st))
     elif is_long_full_period:
         # 3-page layout: hint that visual trends continue on next page
         elements.append(Spacer(1, 12))
@@ -2333,11 +2371,11 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
             st["caption"]
         ))
         
-        # FIX 38: Threshold Legend as color-coded reference table
-        # R15 C2: Strip index legend tracks with the threshold legend
-        if not placed_threshold_legend:
-            elements.extend(_make_strip_index_legend())
-            elements.extend(_make_threshold_legend())
+        # Strip-index legend (the "#N" cross-reference) stays at the bottom; the
+        # thresholds color key now lives at the top of the report (above the
+        # strip). The episode-definition note rides here at the bottom.
+        elements.extend(_make_strip_index_legend())
+        elements.append(_threshold_definition_note(st))
 
     elements.extend(_build_footer(report, st))
     doc.build(elements)
