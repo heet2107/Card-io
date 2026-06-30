@@ -3854,6 +3854,19 @@ def test_r28_009_pam_renders_through_library_with_24h_layer():
     print("PASS: R28.009 PAM renders through the library with the 24h layer")
 
 
+def test_r28_010_strip_color_matches_legend_swatch():
+    """The phase-strip segment color for a condition is the EXACT same color the
+    Clinical Alerting Thresholds legend assigns to it — sourced from one shared
+    map (THRESHOLD_LEGEND_COLORS), so strip and legend can never diverge."""
+    from backend.pdf_render import strip_block_colors
+    from backend.config import THRESHOLD_LEGEND_COLORS
+    for ptype, legend_hex in THRESHOLD_LEGEND_COLORS.items():
+        strip_bg, _text = strip_block_colors(ptype)
+        assert strip_bg.lower() == legend_hex.lower(), (
+            f"{ptype}: strip paints {strip_bg} but legend swatch is {legend_hex}")
+    print("PASS: R28.010 strip segment color matches the legend swatch per condition")
+
+
 # =====================================================================
 # Standalone runner
 # =====================================================================
@@ -4053,6 +4066,7 @@ if __name__ == "__main__":
         test_r28_007_patient_not_loadable_cross_client,
         test_r28_008_api_patients_client_scoped,
         test_r28_009_pam_renders_through_library_with_24h_layer,
+        test_r28_010_strip_color_matches_legend_swatch,
     ]
 
     passed = 0

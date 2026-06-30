@@ -1081,20 +1081,32 @@ _SEVERITY_TIER_RANK = {
 }
 
 
-# Per-tier block colors matching the web app's .phase-block CSS (style.css), so
-# the PDF clinical-status blocks look like the app. (bg, text) per phase type.
-_PHASE_BLOCK_COLORS = {
-    "normal":       ("#059669", "#FFFFFF"),
-    "stable":       ("#059669", "#FFFFFF"),
-    "very_low_hr":  ("#5F0000", "#FFFFFF"),
-    "low_hr":       ("#C62828", "#FFFFFF"),
-    "elevated_hr":  ("#FF8F00", "#1F2937"),
-    "high_hr":      ("#D84315", "#FFFFFF"),
-    "very_high_hr": ("#7F0000", "#FFFFFF"),
-    "elevated_rr":  ("#42A5F5", "#1F2937"),
-    "high_rr":      ("#0D47A1", "#FFFFFF"),
-    "very_high_rr": ("#002171", "#FFFFFF"),
+# Non-condition strip blocks (no threshold tier of their own).
+_NON_CONDITION_BLOCK_BG = {
+    "normal": "#059669",
+    "stable": "#059669",
 }
+
+
+def _relative_luminance(hexstr):
+    """Perceptual luminance 0..1 of a #RRGGBB color (for text-contrast choice)."""
+    h = hexstr.lstrip('#')
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
+
+
+def strip_block_colors(ptype):
+    """SINGLE SOURCE of a condition's strip color: the strip segment color IS the
+    color the Clinical Alerting Thresholds legend assigns to that condition
+    (THRESHOLD_LEGEND_COLORS). Strip and legend therefore can never diverge
+    (R28.2 invariant). Returns (bg_hex, text_hex); text is derived for contrast,
+    not a second color source."""
+    from .config import THRESHOLD_LEGEND_COLORS
+    bg = THRESHOLD_LEGEND_COLORS.get(ptype)
+    if bg is None:
+        bg = _NON_CONDITION_BLOCK_BG.get(ptype, "#6B7280")
+    fg = "#1F2937" if _relative_luminance(bg) > 0.55 else "#FFFFFF"
+    return bg, fg
 
 
 def _build_threshold_legend(st, include_note=True):
@@ -1213,8 +1225,13 @@ def render_phase_blocks_bar(display_phases, content_width_inches, st):
     cells = []
     for p in blocks:
         ptype = _v(p, 'type', '')
-        _bg, fg = _PHASE_BLOCK_COLORS.get(ptype, ("#6B7280", "#FFFFFF"))
-        label = _html.escape(str(_v(p, 'label', ptype) or ptype))
+        _bg, fg = strip_block_colors(ptype)
+        # R28.3 — abbreviate the channel word in the strip boxes only to buy
+        # horizontal room so labels stop wrapping. "Heart Rate" → "HR"; the full
+        # name still appears in the legend above, so it stays unambiguous.
+        # "Breathing" is already short and stays.
+        raw_label = str(_v(p, 'label', ptype) or ptype).replace("Heart Rate", "HR")
+        label = _html.escape(raw_label)
         dr = _html.escape(str(_v(p, 'date_range', '') or ''))
         # fontSize 7 + splitLongWords=0: the label wraps only on whole words (so
         # "Elevated Heart Rate" breaks to at most two whole-word lines) and never
@@ -1235,7 +1252,7 @@ def render_phase_blocks_bar(display_phases, content_width_inches, st):
         ('INNERGRID', (0, 0), (-1, -1), 1.5, colors.white),
     ]
     for i, p in enumerate(blocks):
-        bg, _fg = _PHASE_BLOCK_COLORS.get(_v(p, 'type', ''), ("#6B7280", "#FFFFFF"))
+        bg, _fg = strip_block_colors(_v(p, 'type', ''))
         style.append(('BACKGROUND', (i, 0), (i, 0), HexColor(bg)))
     tbl.setStyle(TableStyle(style))
     return tbl
@@ -1762,7 +1779,9 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
     # rendered once, not duplicated). Compact color key only — the episode
     # definition note rides at the bottom to keep this band small.
     elements.extend(_build_threshold_legend(st, include_note=False))
-    elements.append(Spacer(1, 2))
+    # R28.2 — clear vertical gap so the legend and the phase strip read as two
+    # distinct bands (they sit directly adjacent now that the legend is on top).
+    elements.append(Spacer(1, 8))
 
     # FIX 6: Episode timeline bar — red bars on gray for episodic events
     all_eps = _v(report, "episodes", [])
