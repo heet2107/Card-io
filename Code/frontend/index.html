@@ -45,6 +45,12 @@
     <section id="controls-panel" class="controls-panel">
       <div class="controls-inner">
         <div class="control-group">
+          <label for="client-select">Library</label>
+          <select id="client-select">
+            <option value="">Loading…</option>
+          </select>
+        </div>
+        <div class="control-group">
           <label for="patient-select">Patient</label>
           <select id="patient-select">
             <option value="">Loading patients…</option>
@@ -203,6 +209,8 @@
           </svg>
           Last 24 Hours
         </h2>
+        <!-- 24h color status banner (separate from the 30-day tier) -->
+        <div id="snapshot-banner" class="snapshot-banner" style="display: none"></div>
         <div class="table-wrapper">
           <table class="clinical-table">
             <thead>
@@ -212,6 +220,19 @@
           </table>
         </div>
         <p id="snapshot-note" class="no-data" style="display: none"></p>
+        <!-- one-line plain-language summary of the last 24h -->
+        <p id="snapshot-summary" class="snapshot-summary" style="display: none"></p>
+        <!-- episodic events within the last 24h (same style as the 30-day table) -->
+        <h3 class="subsection-title" id="snapshot-events-head" style="display: none">Episodic Events (last 24h)</h3>
+        <div class="table-wrapper" id="snapshot-events-wrap" style="display: none">
+          <table class="clinical-table" id="snapshot-events-table">
+            <thead>
+              <tr><th>Date</th><th>Time Span</th><th>Duration</th><th>Episodes</th><th>Condition</th><th>Avg</th><th>Min</th><th>Max</th><th>Comment</th></tr>
+            </thead>
+            <tbody id="snapshot-events-tbody"></tbody>
+          </table>
+        </div>
+        <p id="snapshot-events-none" class="no-data" style="display: none">No episodic events in the last 24 hours.</p>
       </section>
 
       <!-- SECTION 1: NARRATIVE -->

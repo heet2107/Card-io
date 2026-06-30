@@ -119,6 +119,58 @@ def compute_last_24h_snapshot(df: pd.DataFrame, window_hours: int = 24) -> Optio
     }
 
 
+_NUM_WORDS = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six"}
+
+
+def _time_of_day(hour: int) -> str:
+    """Plain-language part of day for a 0–23 hour."""
+    if 0 <= hour < 6:
+        return "overnight"
+    if 6 <= hour < 12:
+        return "in the morning"
+    if 12 <= hour < 17:
+        return "in the afternoon"
+    return "in the evening"
+
+
+def build_24h_summary(episodes: list) -> str:
+    """One-line, plain-language summary of the last-24h window (Round 28 Item 1).
+
+    No jargon, no fabrication: when the window is quiet it says so plainly. The
+    episodes passed in are the SAME episodes the 24h events sub-table renders —
+    one source of truth, so the line never disagrees with the table.
+    """
+    from .config import CONDITION_DISPLAY
+
+    if not episodes:
+        return "Last 24 hours: no episodic events, vitals within normal range."
+
+    from collections import defaultdict
+    by_cond: dict[str, list] = defaultdict(list)
+    for e in episodes:
+        cond = getattr(e, "condition", None) or (e.get("condition") if isinstance(e, dict) else None)
+        by_cond[cond].append(e)
+
+    parts: list[str] = []
+    for cond, eps in sorted(by_cond.items(), key=lambda kv: -len(kv[1])):
+        name = CONDITION_DISPLAY.get(cond, cond or "abnormal").lower()
+        n = len(eps)
+        nword = _NUM_WORDS.get(n, str(n))
+        noun = "episode" if n == 1 else "episodes"
+        tod = ""
+        try:
+            start = getattr(eps[0], "start_time", None) or eps[0].get("start_time")
+            tod = " " + _time_of_day(int(pd.Timestamp(start).hour))
+        except Exception:
+            tod = ""
+        parts.append(f"{nword} {name} {noun}{tod}")
+
+    body = "; ".join(parts)
+    # A single quiet-ish finding reads naturally with the reassuring tail.
+    tail = ", otherwise within normal range" if len(parts) == 1 and len(episodes) <= 2 else ""
+    return f"Last 24 hours: {body}{tail}."
+
+
 def compute_full_stats(df: pd.DataFrame):
     """Build the fixed 6-row × 5-column stats table per Implementation Guide.
 

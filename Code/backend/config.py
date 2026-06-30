@@ -312,8 +312,8 @@ SEVERITY_BAND_PHRASES = {
 class Settings(BaseSettings):
     # ── Data source ──────────────────────────────────────────────────────
     excel_path: str = Field(
-        default=str(_DATA_DIR.resolve()),
-        description="Path to the Excel vitals directory (Code/data/).",
+        default=str((_DATA_DIR / "pam_health").resolve()),
+        description="Path to the PAM Health Excel vitals directory (Code/data/pam_health/, Round 28 library structure).",
     )
 
     # ── Timezone ─────────────────────────────────────────────────────────

@@ -36,7 +36,13 @@ from .signal_engine import (
     compute_action_posture, compute_positional_stats, compute_activity_data,
     compute_end_of_period_clustering, compute_last_24h_snapshot,
 )
+from .triage_24h import compute_24h_layer
 from .medhab_ingest import load_medhab_vitals, discover_report_windows
+from .client_registry import (
+    discover_clients, client_label, client_is_csv, client_specs,
+    load_client_data, list_patients, resolve_client_for_patient,
+    is_patient_in_client,
+)
 from .episodes import detect_episodes, compute_rollups
 from .narrative_ai import generate_narrative
 from .charts import (
@@ -54,6 +60,29 @@ app = FastAPI(
     version=settings.app_version,
     description="Clinician-grade RPM intelligence report engine",
 )
+
+
+@app.on_event("startup")
+async def _warm_client_caches():
+    """Round 28 — pre-warm each library's data cache on startup so the first
+    patient-list load is instant. The Excel-shape PAM cohort is a ~7s cold
+    registry scan; without warming, the first 'PAM Health' selection reads as a
+    frozen dropdown. Runs off the event loop so startup isn't blocked, and is
+    best-effort (a failing client must not stop the server). Awaited on a
+    worker thread so startup completes only once caches are warm — the first
+    real selection is then guaranteed instant, with no warm-vs-request race."""
+    import asyncio
+
+    def _warm():
+        for c in discover_clients():
+            try:
+                load_client_data(c)
+                client_specs(c)
+                print(f"[warm] library '{c}' pre-loaded")
+            except Exception as e:  # never let a bad folder block boot
+                print(f"[warm] library '{c}' failed to pre-load: {e}")
+
+    await asyncio.get_event_loop().run_in_executor(None, _warm)
 
 app.add_middleware(
     CORSMiddleware,
@@ -79,34 +108,31 @@ def resolve_patient_id(patient_id: str) -> str:
     return patient_id
 
 
-# ── MedHab cohort (the live app currently serves this cohort) ────────────────
-from pathlib import Path as _Path
-from functools import lru_cache
+# ── Client libraries (Round 28) ──────────────────────────────────────────────
+# Patients are scoped by client/library, discovered from data/ sub-folders.
+# A patient is loadable only under its own client (privacy boundary, R28_007).
+# See backend/client_registry.py.
 
-_MEDHAB_DIR = str(_Path(__file__).resolve().parent.parent / "data" / "medhab")
+def _resolve_client(req_client: str | None, patient_id: str) -> str:
+    """Pick the client a report runs under.
 
-
-@lru_cache(maxsize=1)
-def _medhab_data() -> dict:
-    """{patient: combined frame} for the MedHab cohort (cached)."""
-    return load_medhab_vitals(_MEDHAB_DIR)
-
-
-@lru_cache(maxsize=1)
-def _medhab_specs() -> list:
-    """Per-patient-month report windows discovered from the data (cached)."""
-    return discover_report_windows(_MEDHAB_DIR)
-
-
-def _is_medhab(patient_id: str) -> bool:
-    try:
-        return patient_id in _medhab_data()
-    except Exception:
-        return False
+    If the request names a client, honour it verbatim (the privacy boundary):
+    the patient must then exist under THAT client or the lookup 404s. Only when
+    no client is named do we fall back to discovering the patient's owning
+    client.
+    """
+    if req_client:
+        if req_client not in discover_clients():
+            raise HTTPException(status_code=404, detail=f"Unknown library '{req_client}'.")
+        return req_client
+    found = resolve_client_for_patient(patient_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail=f"Patient '{patient_id}' not found in any library.")
+    return found
 
 
 def _cache_key(req: ReportRequest) -> str:
-    raw = f"{req.patient_id}|{req.range_type}|{req.start}|{req.end}|{req.month}|{req.use_ai}"
+    raw = f"{req.client}|{req.patient_id}|{req.range_type}|{req.start}|{req.end}|{req.month}|{req.use_ai}"
     return hashlib.md5(raw.encode()).hexdigest()
 
 
@@ -133,13 +159,17 @@ async def _run_pipeline(req: ReportRequest) -> tuple[dict, "pd.DataFrame"]:
     from .window_intelligence import detect_phases, compute_report_priority
     from .models import Phase
 
-    # ── Step 1: Look up patient (cohort-aware) ───────────────────────────
+    # ── Step 1: Look up patient (client-scoped) ──────────────────────────
     req.patient_id = resolve_patient_id(req.patient_id)
-    _is_mh = _is_medhab(req.patient_id)
+    client = _resolve_client(req.client, req.patient_id)
+    _is_mh = client_is_csv(client)   # clean-CSV (MedHab-shape) client → month flow
     _mh_partial = False
-    all_data = _medhab_data() if _is_mh else load_vitals()
+    # Privacy boundary: load ONLY the selected client's folder. A patient that
+    # belongs to another library is simply not present here → 404.
+    all_data = load_client_data(client)
     if req.patient_id not in all_data:
-        raise HTTPException(status_code=404, detail=f"Patient '{req.patient_id}' not found.")
+        raise HTTPException(status_code=404,
+            detail=f"Patient '{req.patient_id}' not found in library '{client}'.")
 
     df = all_data[req.patient_id]
 
@@ -148,7 +178,7 @@ async def _run_pipeline(req: ReportRequest) -> tuple[dict, "pd.DataFrame"]:
     if _is_mh and req.range_type == "month":
         # MedHab month report — use the same per-patient-month window as the
         # batch (data-driven start/end, partial-period flag).
-        spec = next((s for s in _medhab_specs()
+        spec = next((s for s in client_specs(client)
                      if s["patient"] == req.patient_id and s["month_key"] == req.month), None)
         if spec is None:
             raise HTTPException(status_code=404,
@@ -401,6 +431,18 @@ async def _run_pipeline(req: ReportRequest) -> tuple[dict, "pd.DataFrame"]:
         capped_pct = min(data_quality.quality_pct, 100.0)
         coverage_summary = f"{data_quality.total_hours}/{data_quality.expected_hours}h ({capped_pct}%)"
 
+    # ── Last-24h triage layer (Round 28) ─────────────────────────────────
+    # The snapshot stats plus the 24h episodic events, one-line summary, and
+    # 24h status banner classification — same engines, scoped to the last 24h.
+    snapshot_24h = compute_last_24h_snapshot(df)
+    layer_24h = await compute_24h_layer(req.patient_id, df)
+    if snapshot_24h is not None and layer_24h is not None:
+        snapshot_24h.update(layer_24h)
+    # The 30-day tier travels alongside so the banner can label each window and
+    # the two never read as a contradiction (header tier vs 24h banner).
+    if snapshot_24h is not None:
+        snapshot_24h["status_30d"] = triage
+
     print(f"DEBUG PIPELINE: hr_stats is {hr_stats}")
     report_dict = {
         "patient_id": req.patient_id,
@@ -409,7 +451,7 @@ async def _run_pipeline(req: ReportRequest) -> tuple[dict, "pd.DataFrame"]:
         "report_date": (window_end_ts + pd.Timedelta(days=1)).strftime("%Y-%m-%d"),
         "data_resolution": data_resolution,
         "coverage_summary": coverage_summary,
-        "snapshot_24h": compute_last_24h_snapshot(df),
+        "snapshot_24h": snapshot_24h,
         "disclaimer": "Decision-support summary derived from longitudinal vital sign trends; interpret in clinical context.",
         "hr_summaries": hr_stats.model_dump() if hasattr(hr_stats, "model_dump") else hr_stats,
         "rr_summaries": rr_stats.model_dump() if hasattr(rr_stats, "model_dump") else rr_stats,
@@ -450,41 +492,75 @@ async def _run_pipeline(req: ReportRequest) -> tuple[dict, "pd.DataFrame"]:
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
-@app.get("/api/patients")
-async def list_patients():
-    """Return the MedHab cohort patient list (the cohort the live app serves)."""
+@app.get("/api/clients")
+async def list_clients():
+    """List the patient libraries (clients), discovered from data/ sub-folders.
+
+    Each library is a separate client; selecting one scopes the patient list so
+    one client's data can never appear under another (Round 28, Item 3).
+    """
     try:
-        patients = sorted(_medhab_data().keys())
-        return {"patients": patients}
+        return {"clients": [{"id": c, "label": client_label(c)} for c in discover_clients()]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/patients")
+async def list_patients_endpoint(client: str | None = None):
+    """Return the patient list for a library. ``?client=<id>`` scopes the list
+    to exactly that client; omitting it defaults to the first discovered
+    library. A patient from one library never appears under another."""
+    try:
+        clients = discover_clients()
+        if not clients:
+            return {"client": None, "patients": []}
+        if client is None:
+            client = clients[0]
+        if client not in clients:
+            raise HTTPException(status_code=404, detail=f"Unknown library '{client}'.")
+        return {"client": client, "patients": list_patients(client)}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/months")
-async def list_months():
-    """Available MedHab report months, discovered from the data (e.g. April/May
-    2026). Drives the Time Window dropdown; a future June file appears here with
-    no code change."""
+async def list_months(client: str | None = None):
+    """Available report months for a (CSV-shape) library, discovered from the
+    data. Excel-shape libraries (e.g. PAM Health) report over rolling ranges,
+    not months, so this returns an empty list and the UI shows range options."""
     try:
+        clients = discover_clients()
+        if not clients:
+            return {"months": []}
+        if client is None:
+            client = clients[0]
+        if client not in clients:
+            raise HTTPException(status_code=404, detail=f"Unknown library '{client}'.")
         seen: dict[str, str] = {}
-        for s in _medhab_specs():
+        for s in client_specs(client):
             seen[s["month_key"]] = s["month_label"].replace("_", " ")
         return {"months": [{"key": k, "label": seen[k]} for k in sorted(seen)]}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/patients/{patient_id}/locations")
-async def patient_locations(patient_id: str):
+async def patient_locations(patient_id: str, client: str | None = None):
     """Return the locations (Chair, Bed, Living Room) and date range for a patient.
-    
+
     Enables the frontend to intelligently disable unavailable report types.
     """
     try:
         patient_id = resolve_patient_id(patient_id)
-        if _is_medhab(patient_id):
-            # MedHab is a single wearable-style stream — no positional sensors.
-            df = _medhab_data()[patient_id]
+        client = _resolve_client(client, patient_id)
+        if client_is_csv(client):
+            # CSV-shape client (MedHab) — a single wearable-style stream, no
+            # positional sensors.
+            df = load_client_data(client)[patient_id]
             ts = df["timestamp"]
             return {
                 "patient_id": patient_id,
@@ -505,7 +581,7 @@ async def patient_locations(patient_id: str):
 
 
 @app.get("/api/patients/{patient_id}/interesting-week")
-async def interesting_week(patient_id: str):
+async def interesting_week(patient_id: str, client: str | None = None):
     """Find the 7-day window with the highest clinical burden for a patient.
 
     Slides a 7-day window across the entire dataset, runs episode detection
@@ -514,7 +590,8 @@ async def interesting_week(patient_id: str):
     from .window_intelligence import find_most_interesting_week
 
     patient_id = resolve_patient_id(patient_id)
-    all_data = load_vitals()
+    client = _resolve_client(client, patient_id)
+    all_data = load_client_data(client)
     if patient_id not in all_data:
         raise HTTPException(status_code=404, detail=f"Patient '{patient_id}' not found.")
 

@@ -169,6 +169,17 @@ async def generate_one(patient_id: str, range_type: str,
 
     coverage = _coverage_summary(data_quality, positional_stats)
 
+    # Round 28 — last-24h triage layer (status banner + episodic events +
+    # one-line summary). Same shared engine the live API uses, so the batch
+    # PDFs and the web preview render the identical layer.
+    from backend.triage_24h import compute_24h_layer
+    snapshot_24h = compute_last_24h_snapshot(df)
+    layer_24h = await compute_24h_layer(patient_id, df)
+    if snapshot_24h is not None and layer_24h is not None:
+        snapshot_24h.update(layer_24h)
+    if snapshot_24h is not None:
+        snapshot_24h["status_30d"] = triage
+
     chart_b64      = generate_combined_chart(df, episodes)
     histogram_b64  = generate_histogram(df)
     positional_b64 = generate_positional_chart(df)
@@ -181,7 +192,7 @@ async def generate_one(patient_id: str, range_type: str,
         "report_date": (window_end_ts + pd.Timedelta(days=1)).strftime("%Y-%m-%d"),
         "data_resolution": data_res,
         "coverage_summary": coverage,
-        "snapshot_24h": compute_last_24h_snapshot(df),
+        "snapshot_24h": snapshot_24h,
         "disclaimer": "Decision-support summary derived from longitudinal vital sign trends; interpret in clinical context.",
         "hr_summaries": hr_stats.model_dump(),
         "rr_summaries": rr_stats.model_dump(),
@@ -361,6 +372,7 @@ async def generate_one(patient_id: str, range_type: str,
         "hr_avg":        hr_stats.mean,
         "rr_avg":        rr_stats.mean,
         "sensor_type":   sensor_type,
+        "snapshot_24h":  snapshot_24h,
         "pdf_bytes":     pdf_bytes,
         "pages":         1 if one_page_only else 2,
         "success":       True,

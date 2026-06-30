@@ -26,6 +26,7 @@ const STATS_LABELS = {
 
 // ── DOM Elements ────────────────────────────────────────────────────────────
 
+const $clientSelect  = document.getElementById("client-select");
 const $patientSelect = document.getElementById("patient-select");
 const $rangeSelect   = document.getElementById("range-select");
 const $startDate     = document.getElementById("start-date");
@@ -46,17 +47,72 @@ const $aiToggle      = document.getElementById("ai-toggle");
 let currentReport = null;
 let currentPdfUrl = null;  // object URL for the inline PDF preview (revoked on regen)
 let patientMeta = {};  // Cache: { patientId: { locations, date_range, total_hours } }
+let currentClient = null;  // selected library id, e.g. "medhab" / "pam_health"
+
+// The default rolling-range options (used for Excel libraries that report over
+// ranges rather than months). Captured once so loadMonths() can restore them
+// when switching to a range-based library.
+const DEFAULT_RANGE_OPTIONS_HTML = $rangeSelect ? $rangeSelect.innerHTML : "";
 
 // ── Init ────────────────────────────────────────────────────────────────────
 
 async function init() {
     try {
-        const res = await fetch(`${API_BASE}/api/patients`);
+        // Discover libraries (clients), then load the first one's patients.
+        const cres = await fetch(`${API_BASE}/api/clients`);
+        if (!cres.ok) throw new Error("Failed to load libraries");
+        const cdata = await cres.json();
+        const clients = cdata.clients || [];
+
+        $clientSelect.innerHTML = "";
+        if (clients.length === 0) {
+            $clientSelect.innerHTML = '<option value="">No libraries</option>';
+        } else {
+            clients.forEach((c) => {
+                const opt = document.createElement("option");
+                opt.value = c.id;
+                opt.textContent = c.label;
+                $clientSelect.appendChild(opt);
+            });
+            currentClient = clients[0].id;
+        }
+        $clientSelect.addEventListener("change", onClientChange);
+
+        $patientSelect.addEventListener("change", onPatientChange);
+        await loadPatients();
+    } catch (err) {
+        console.error("Init error:", err);
+        $patientSelect.innerHTML = '<option value="">Error loading patients</option>';
+    }
+}
+
+/**
+ * Load the patient list for the currently-selected library and repopulate the
+ * patient dropdown. A patient from one library never appears under another —
+ * the list is scoped server-side by ?client=.
+ */
+async function loadPatients() {
+    // Show an explicit loading state so the dropdown never appears frozen on a
+    // cold/slow load (e.g. the first PAM Excel scan, or a future larger
+    // cohort). Disable the controls until the scoped list is in, so a patient
+    // from the previous library can't be picked mid-swap.
+    $patientSelect.innerHTML = '<option value="">Loading…</option>';
+    $patientSelect.disabled = true;
+    $clientSelect.disabled = true;
+    $btnGenerate.disabled = true;
+    $btnSmartWeek.disabled = true;
+    try {
+        const url = currentClient
+            ? `${API_BASE}/api/patients?client=${encodeURIComponent(currentClient)}`
+            : `${API_BASE}/api/patients`;
+        const res = await fetch(url);
         if (!res.ok) throw new Error("Failed to load patients");
         const data = await res.json();
+        if (data.client) currentClient = data.client;
 
+        patientMeta = {};  // metadata cache is per-library
         $patientSelect.innerHTML = "";
-        if (data.patients.length === 0) {
+        if (!data.patients || data.patients.length === 0) {
             $patientSelect.innerHTML = '<option value="">No patients found</option>';
             return;
         }
@@ -71,29 +127,45 @@ async function init() {
         $btnGenerate.disabled = false;
         $btnSmartWeek.disabled = false;
 
-        // Populate the Time Window dropdown with available months (data-driven).
+        // Populate the Time Window dropdown for this library (data-driven).
         await loadMonths();
 
         // Auto-load metadata for the first patient
-        $patientSelect.addEventListener("change", onPatientChange);
         await onPatientChange();
     } catch (err) {
-        console.error("Init error:", err);
+        console.error("loadPatients error:", err);
         $patientSelect.innerHTML = '<option value="">Error loading patients</option>';
+    } finally {
+        // Re-enable the controls regardless of outcome.
+        $patientSelect.disabled = false;
+        $clientSelect.disabled = false;
     }
 }
 
+/** Switch library: reload the scoped patient list (and its windows). */
+async function onClientChange() {
+    currentClient = $clientSelect.value || null;
+    await loadPatients();
+}
+
 /**
- * Load available report months from the API and populate the Time Window
- * dropdown. Each option's value is the month key (e.g. "2026-04"); the report
- * request sends range_type="month" with that key.
+ * Load available report months for the current library and populate the Time
+ * Window dropdown. CSV-shape libraries (MedHab) report by month; Excel-shape
+ * libraries (PAM Health) have no months, so we restore the rolling-range
+ * options instead.
  */
 async function loadMonths() {
     try {
-        const res = await fetch(`${API_BASE}/api/months`);
-        if (!res.ok) return;
-        const data = await res.json();
-        if (!data.months || data.months.length === 0) return;
+        const url = currentClient
+            ? `${API_BASE}/api/months?client=${encodeURIComponent(currentClient)}`
+            : `${API_BASE}/api/months`;
+        const res = await fetch(url);
+        const data = res.ok ? await res.json() : { months: [] };
+        if (!data.months || data.months.length === 0) {
+            // Range-based library — restore the default rolling-window options.
+            $rangeSelect.innerHTML = DEFAULT_RANGE_OPTIONS_HTML;
+            return;
+        }
         $rangeSelect.innerHTML = "";
         data.months.forEach((m) => {
             const opt = document.createElement("option");
@@ -129,7 +201,9 @@ async function onPatientChange() {
     // Fetch metadata (cached)
     if (!patientMeta[pid]) {
         try {
-            const res = await fetch(`${API_BASE}/api/patients/${encodeURIComponent(pid)}/locations`);
+            const locUrl = `${API_BASE}/api/patients/${encodeURIComponent(pid)}/locations`
+                + (currentClient ? `?client=${encodeURIComponent(currentClient)}` : "");
+            const res = await fetch(locUrl);
             if (res.ok) {
                 patientMeta[pid] = await res.json();
             } else {
@@ -238,6 +312,78 @@ async function smartWeekDetect() {
 
 // ── Generate Report ─────────────────────────────────────────────────────────
 
+// ── 24h triage layer (banner + summary + episodic sub-table) ────────────────
+// Mirrors the PDF block: same engine, same bold-linking, same plain-language
+// summary. The 24h banner is a SEPARATE classification from the 30-day tier;
+// each window is labeled so the two never read as a contradiction.
+
+const BANNER_24H = {
+    "Red":    { fill: "#DC2626", word: "RED" },
+    "Yellow": { fill: "#D97706", word: "ELEVATED" },
+    "Green":  { fill: "#16A34A", word: "NORMAL" },
+};
+
+function renderSnapshotBanner(snap) {
+    const el = document.getElementById("snapshot-banner");
+    if (!el) return;
+    const status = snap.status_24h;
+    if (!status || !BANNER_24H[status]) { el.style.display = "none"; return; }
+    const b = BANNER_24H[status];
+    const tier30 = snap.status_30d ? `30-Day Tier: ${String(snap.status_30d).toUpperCase()}` : "";
+    el.style.background = b.fill;
+    el.innerHTML = `<span class="banner-left">Last 24 Hours: ${b.word}</span>`
+                 + `<span class="banner-right">${escapeHtml(tier30)}</span>`;
+    el.style.display = "flex";
+}
+
+function renderSnapshotSummary(snap) {
+    const el = document.getElementById("snapshot-summary");
+    if (!el) return;
+    if (snap.summary) {
+        el.textContent = snap.summary;
+        el.style.display = "block";
+    } else {
+        el.style.display = "none";
+    }
+}
+
+function renderSnapshotEvents(snap) {
+    const head = document.getElementById("snapshot-events-head");
+    const wrap = document.getElementById("snapshot-events-wrap");
+    const none = document.getElementById("snapshot-events-none");
+    const tbody = document.getElementById("snapshot-events-tbody");
+    const rows = (snap.events || []).slice(0, 6);
+    head.style.display = "block";
+    tbody.innerHTML = "";
+    if (rows.length === 0) {
+        wrap.style.display = "none";
+        none.style.display = "block";
+        return;
+    }
+    none.style.display = "none";
+    wrap.style.display = "block";
+    const bare = (s) => String(s == null ? "" : s).replace(" bpm", "").replace(" brpm", "").trim();
+    rows.forEach((row) => {
+        const cond = String(row.category || "").replace(" (brief)", "");
+        const isLow = String(row.phase_type || row.brief_phase_type || "").includes("low");
+        const minCell = bare(row.min), maxCell = bare(row.max);
+        const th = (row.total_hours != null ? row.total_hours : (row.sustained_hours != null ? row.sustained_hours : 0));
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+            <td>${escapeHtml(row.date || "")}</td>
+            <td>${escapeHtml(row.time_span || "")}</td>
+            <td>${th}h</td>
+            <td>${row.episodes != null ? row.episodes : ""}</td>
+            <td><strong>${escapeHtml(cond)}</strong></td>
+            <td>${escapeHtml(bare(row.average))}</td>
+            <td>${isLow ? "<strong>" + escapeHtml(minCell) + "</strong>" : escapeHtml(minCell)}</td>
+            <td>${isLow ? escapeHtml(maxCell) : "<strong>" + escapeHtml(maxCell) + "</strong>"}</td>
+            <td>${escapeHtml(row.comment || "")}</td>
+        `;
+        tbody.appendChild(tr);
+    });
+}
+
 async function generateReport() {
     const patientId = $patientSelect.value;
     const rangeType = $rangeSelect.value;
@@ -247,6 +393,7 @@ async function generateReport() {
     const body = {
         patient_id: patientId,
         range_type: rangeType,
+        client: currentClient,
         use_ai: useAI
     };
     if (isMonthKey(rangeType)) {
@@ -298,6 +445,7 @@ async function downloadPDF() {
     const body = {
         patient_id: patientId,
         range_type: rangeType,
+        client: currentClient,
         use_ai: useAI
     };
     if (isMonthKey(rangeType)) {
@@ -501,6 +649,9 @@ function renderReport(r) {
         } else {
             snapNote.style.display = "none";
         }
+        renderSnapshotBanner(snap);
+        renderSnapshotSummary(snap);
+        renderSnapshotEvents(snap);
         snapSection.style.display = "block";
     } else {
         snapSection.style.display = "none";

@@ -150,6 +150,20 @@ _TRIAGE_BADGE_TEXT = {
     TriageLabels.GREEN:  "GREEN: Routine Review",
 }
 
+# Round 28 — vivid, color-FILLED banner palette for the 24h status banner.
+# Stronger than the pastel header badge so a nurse can scan a column of these
+# at a glance ("this is red, this is green, I'll skip that"). White text.
+_BANNER_FILL = {
+    TriageLabels.RED:    _hex("#DC2626"),
+    TriageLabels.YELLOW: _hex("#D97706"),
+    TriageLabels.GREEN:  _hex("#16A34A"),
+}
+_BANNER_WORD = {
+    TriageLabels.RED:    "RED",
+    TriageLabels.YELLOW: "ELEVATED",
+    TriageLabels.GREEN:  "NORMAL",
+}
+
 # Phase type colors for the status timeline bar — pulled from config
 _PHASE_COLOR_MAP = {k: _hex(v) for k, v in PHASE_COLORS.items()}
 
@@ -410,10 +424,126 @@ def _build_footer(report, st):
     return []
 
 
+def _build_24h_status_banner(snap, page_w):
+    """Round 28 Item 2 — a prominent, color-filled banner classifying the LAST
+    24 HOURS only. Same severity engine as the 30-day tier, scoped to 24h, so
+    the two windows can legitimately disagree (e.g. RED over 30d, NORMAL in the
+    last 24h). Each window is labeled explicitly so they never read as a
+    contradiction. Returns [] when there is no 24h status."""
+    status = snap.get("status_24h")
+    if not status:
+        return []
+    fill = _BANNER_FILL.get(status, _BANNER_FILL[TriageLabels.GREEN])
+    word = _BANNER_WORD.get(status, "NORMAL")
+    from reportlab.lib.styles import ParagraphStyle as _PS
+    banner_style = _PS("banner24h", fontName="Helvetica-Bold", fontSize=11,
+                       leading=13, textColor=colors.white)
+    # Left: the 24h verdict. Right: the 30-day tier, so the nurse sees both
+    # windows side by side and knows which color refers to which window.
+    left = Paragraph(f"Last 24 Hours: {word}", banner_style)
+    status_30d = snap.get("status_30d")
+    right_txt = ""
+    if status_30d:
+        right_txt = f"30-Day Tier: {str(status_30d).upper()}"
+    right_style = _PS("banner24h_r", fontName="Helvetica", fontSize=8,
+                      leading=10, textColor=colors.white, alignment=2)
+    right = Paragraph(right_txt, right_style)
+    bt = Table([[left, right]], colWidths=[page_w * 0.62, page_w * 0.38])
+    bt.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), fill),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 8),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+        ('TOPPADDING', (0, 0), (-1, -1), 6),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+    ]))
+    return [bt, Spacer(1, 4)]
+
+
+def _build_24h_events_subtable(snap, st):
+    """Round 28 Item 1 — episodic events within the last 24h, rendered in the
+    SAME style as the 30-day unified table (same columns, same bold-linking:
+    condition + its triggering metric bold). The rows are produced by the same
+    narrative row-builder scoped to 24h, so this is purely presentation."""
+    rows = snap.get("events") or []
+    evt_cfg = RENDER_CONFIG["events_table"]
+    table_columns = evt_cfg.get("columns", [])
+    if not table_columns:
+        return []
+
+    from reportlab.lib.styles import ParagraphStyle as _PS
+    evt_cell = _PS("evt_cell24", parent=st["table_cell"], fontSize=6.5, leading=7.5)
+    evt_hdr = _PS("evt_hdr24", parent=st["table_header"], fontSize=6.5, leading=7.5)
+
+    sub_head = Paragraph("Episodic Events (last 24h)", st["section_head"])
+
+    if not rows:
+        # Quiet window — say so plainly, never fabricate a row.
+        note = Paragraph("<i>No episodic events in the last 24 hours.</i>", st["legend"])
+        return [sub_head, note, Spacer(1, 3)]
+
+    def _bare(s):
+        return _html.escape(str(s).replace(" bpm", "").replace(" brpm", "").strip())
+
+    header_row = [Paragraph(f'<b>{col["label"]}</b>', evt_hdr) for col in table_columns]
+    pt_data = [header_row]
+    # Cap to the same max as the 30-day table; over 24h this is rarely reached.
+    for row in rows[: evt_cfg.get("max_rows", 6)]:
+        th = row.get('total_hours', row.get('sustained_hours', 0))
+        ptype = row.get('phase_type', '') or row.get('brief_phase_type', '') or ''
+        is_low = 'low' in ptype
+        cells = []
+        for col in table_columns:
+            k = col["key"]
+            if k == "date":
+                cells.append(Paragraph(row.get('date', ''), evt_cell))
+            elif k == "time_span":
+                cells.append(Paragraph(row.get('time_span', ''), evt_cell))
+            elif k == "duration":
+                cells.append(Paragraph(f"{th}h", evt_cell))
+            elif k == "episodes":
+                cells.append(Paragraph(str(row.get('episodes', 0)), evt_cell))
+            elif k == "condition":
+                cells.append(Paragraph(f"<b>{_html.escape(row.get('category', ''))}</b>", evt_cell))
+            elif k == "avg":
+                cells.append(Paragraph(_bare(row.get('average', '')), evt_cell))
+            elif k == "min":
+                v = _bare(row.get('min', '—'))
+                cells.append(Paragraph(f"<b>{v}</b>" if is_low else v, evt_cell))
+            elif k == "max":
+                v = _bare(row.get('max', '—'))
+                cells.append(Paragraph(v if is_low else f"<b>{v}</b>", evt_cell))
+            elif k == "comment":
+                cells.append(Paragraph(_html.escape(row.get('comment', '')), evt_cell))
+            else:
+                cells.append(Paragraph("", evt_cell))
+        pt_data.append(cells)
+
+    base_width = 7.0 * inch
+    widths = [col["width"] * base_width for col in table_columns]
+    pt = Table(pt_data, colWidths=widths)
+    pt.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), _HEADER_BG),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('GRID', (0, 0), (-1, -1), 0.5, _BORDER),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, _hex("#F9FAFB")]),
+        ('LEFTPADDING', (0, 0), (-1, -1), 4),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+        ('TOPPADDING', (0, 0), (-1, -1), 2),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+    ]))
+    return [sub_head, pt, Spacer(1, 3)]
+
+
 def _build_snapshot_24h_elements(report, st, page_w):
-    """Item 2 — compact 'Last 24 Hours' block: HR and RR avg/min/max over the
-    rolling final 24h of the data. No fabricated alerts; graceful low-coverage
-    note. Returns [] when unavailable."""
+    """'Last 24 Hours' triage block (Round 28). In order:
+      1. Color status banner — 24h verdict + the 30-day tier, each labeled.
+      2. HR/RR avg/min/max snapshot table.
+      3. One-line plain-language summary of the window.
+      4. Episodic events sub-table (same style as the 30-day unified table).
+    No fabricated alerts; graceful low-coverage note. Returns [] when
+    unavailable."""
     snap = _v(report, "snapshot_24h", None)
     if not snap:
         return []
@@ -445,12 +575,20 @@ def _build_snapshot_24h_elements(report, st, page_w):
         ('TOPPADDING', (0, 0), (-1, -1), 2),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
     ]))
-    elems = [Paragraph("Last 24 Hours", st["section_head"]), tbl]
+    elems = [Paragraph("Last 24 Hours", st["section_head"])]
+    elems += _build_24h_status_banner(snap, page_w)
+    elems.append(tbl)
     if snap.get("coverage_pct", 100) < 75:
         note = (f"Limited data in the final 24h "
                 f"({snap.get('hours_present', 0)}/{snap.get('expected_hours', 24)}h); "
                 f"values reflect available readings.")
         elems.append(Paragraph(f"<i>{_html.escape(note)}</i>", st["legend"]))
+    summary = snap.get("summary")
+    if summary:
+        elems.append(Spacer(1, 2))
+        elems.append(Paragraph(_html.escape(summary), st["body"]))
+    elems.append(Spacer(1, 3))
+    elems += _build_24h_events_subtable(snap, st)
     elems.append(Spacer(1, 3))
     return elems
 

@@ -3699,6 +3699,162 @@ def test_ut_008_priority_consistent_with_triage():
 
 
 # =====================================================================
+# Round 28 — 24h triage layer + client-scoped patient library
+# =====================================================================
+
+def _pdf_text(res):
+    import io as _io
+    from PyPDF2 import PdfReader
+    return "\n".join(p.extract_text() for p in PdfReader(_io.BytesIO(res["pdf_bytes"])).pages)
+
+
+def test_r28_001_24h_episodic_subtable_present_or_empty_note():
+    """The 24h block carries an episodic-events sub-table when events exist in
+    the last 24h, and a plain 'no events' note otherwise — never a fabricated
+    row."""
+    # Events case — Garrett April has 24h episodic events.
+    res = _MH("2026-04", "Garrett")
+    snap = res["snapshot_24h"]
+    assert snap and snap.get("event_count", 0) > 0
+    assert snap.get("events"), "events in window -> sub-table rows must exist"
+    assert "Episodic Events (last 24h)" in _pdf_text(res)
+    # Quiet case — Wilson May has no 24h events: empty note, no fabrication.
+    quiet = _MH("2026-05", "Wilson")
+    qsnap = quiet["snapshot_24h"]
+    assert qsnap.get("event_count", 0) == 0
+    assert not qsnap.get("events"), "quiet window must not fabricate events"
+    assert "No episodic events in the last 24 hours" in _pdf_text(quiet)
+    print("PASS: R28.001 24h episodic sub-table present when events, empty note otherwise")
+
+
+def test_r28_002_24h_uses_same_episode_engine():
+    """24h episode detection uses the SAME engine as the 30-day view, scoped to
+    the window — no separate/forked detection logic (source inspection)."""
+    import inspect
+    from backend import triage_24h
+    src = inspect.getsource(triage_24h.compute_24h_layer)
+    assert "detect_episodes" in src, "must reuse the canonical episode engine"
+    assert "generate_narrative" in src, "rows built by the same 30-day row-builder"
+    # The scoping is a window filter on df, not a different detector.
+    assert "df24" in src and "hours=24" in src
+    from backend.episodes import detect_episodes as _de
+    assert _de.__module__ == "backend.episodes"
+    print("PASS: R28.002 24h detection reuses the 30-day episode engine, window-scoped")
+
+
+def test_r28_003_24h_summary_plain_language_reflects_episodes():
+    """The 24h one-line summary is present, plain-language, and reflects the
+    actual episodes (quiet window says so plainly)."""
+    from backend.signal_engine import build_24h_summary
+    assert build_24h_summary([]) == (
+        "Last 24 hours: no episodic events, vitals within normal range.")
+    res = _MH("2026-04", "Garrett")
+    snap = res["snapshot_24h"]
+    summ = snap["summary"]
+    assert summ.lower().startswith("last 24 hours:")
+    assert snap["event_count"] > 0 and summ != (
+        "Last 24 hours: no episodic events, vitals within normal range.")
+    # Plain language — no engine jargon or raw units leak into the line.
+    for jarg in ("phase_type", "brpm", "bpm", "S0", "S1", "severity"):
+        assert jarg not in summ, f"summary must stay jargon-free (found {jarg!r})"
+    print("PASS: R28.003 24h summary present, plain-language, reflects episodes")
+
+
+def test_r28_004_24h_status_same_severity_logic_scoped():
+    """The 24h status banner is classified by the SAME severity logic as the
+    tier, scoped to 24h — one engine, two windows."""
+    import inspect
+    from backend import triage_24h
+    src = inspect.getsource(triage_24h.compute_24h_layer)
+    assert "compute_triage(" in src, "24h status must use the tier's severity fn"
+    res = _MH("2026-04", "Garrett")
+    snap = res["snapshot_24h"]
+    assert snap.get("status_24h") in ("Red", "Yellow", "Green")
+    assert snap.get("status_30d") == res["triage"]
+    # The whole point: the two windows are independently classified and may
+    # legitimately disagree. Garrett April is RED over 30 days, not RED in 24h.
+    assert res["triage"] == "Red" and snap["status_24h"] != "Red"
+    print("PASS: R28.004 24h status uses tier severity logic, scoped; windows can disagree")
+
+
+def test_r28_005_windows_explicitly_labeled():
+    """The 24h banner and the 30-day tier each label their window explicitly, so
+    a color is never ambiguous about which window it refers to."""
+    res = _MH("2026-04", "Garrett")
+    text = _pdf_text(res)
+    assert "Last 24 Hours:" in text, "24h banner must label its window"
+    assert "30-Day Tier:" in text, "banner must name the 30-day tier explicitly"
+    print("PASS: R28.005 24h banner and 30-day tier each label their window")
+
+
+def test_r28_006_library_folder_discovered_not_hardcoded():
+    """The library list is discovered from data/ sub-folders (not a hardcoded
+    client list); the loader is chosen by file shape, not client name."""
+    import inspect
+    from backend import client_registry as cr
+    dsrc = inspect.getsource(cr.discover_clients)
+    assert "iterdir" in dsrc, "clients must be discovered from the folder tree"
+    assert "['medhab'" not in dsrc and '"medhab"' not in dsrc, "no hardcoded list"
+    clients = cr.discover_clients()
+    assert "medhab" in clients and "pam_health" in clients
+    lsrc = inspect.getsource(cr.load_client_data)
+    assert "client_is_csv" in lsrc, "loader dispatch keys on file shape, not name"
+    print("PASS: R28.006 library folder-discovered, loader by shape, not hardcoded")
+
+
+def test_r28_007_patient_not_loadable_cross_client():
+    """Privacy boundary: a patient under client A is not loadable under client B;
+    each patient resolves to exactly one client."""
+    from backend import client_registry as cr
+    mh = cr.list_patients("medhab")[0]
+    ph = cr.list_patients("pam_health")[0]
+    assert cr.is_patient_in_client(mh, "medhab")
+    assert not cr.is_patient_in_client(mh, "pam_health"), "no cross-client load"
+    assert cr.is_patient_in_client(ph, "pam_health")
+    assert not cr.is_patient_in_client(ph, "medhab"), "no cross-client load"
+    assert cr.resolve_client_for_patient(mh) == "medhab"
+    assert cr.resolve_client_for_patient(ph) == "pam_health"
+    print("PASS: R28.007 patient not loadable across client boundary")
+
+
+def test_r28_008_api_patients_client_scoped():
+    """`/api/patients?client=X` returns only client X's patients; an unknown
+    client is rejected."""
+    from fastapi.testclient import TestClient
+    from backend.main import app
+    from backend import client_registry as cr
+    c = TestClient(app)
+    mh = set(cr.list_patients("medhab"))
+    ph = set(cr.list_patients("pam_health"))
+    r = c.get("/api/patients?client=medhab").json()
+    assert set(r["patients"]) == mh and r["client"] == "medhab"
+    assert not (set(r["patients"]) & ph), "no PAM patient leaks into MedHab list"
+    r2 = c.get("/api/patients?client=pam_health").json()
+    assert set(r2["patients"]) == ph and r2["client"] == "pam_health"
+    assert c.get("/api/patients?client=does_not_exist").status_code == 404
+    print("PASS: R28.008 /api/patients is client-scoped")
+
+
+def test_r28_009_pam_renders_through_library_with_24h_layer():
+    """PAM Health ingests and renders through the library structure, and the
+    rendered reports carry the 24h triage layer (banner/events/summary)."""
+    import asyncio
+    from backend import client_registry as cr
+    from batch_generate import generate_one
+    data = cr.load_client_data("pam_health")
+    assert data and not cr.client_is_csv("pam_health"), "PAM is the Excel-shape library"
+    pid = sorted(data.keys())[0]
+    # 30Day + 90Day both render and carry the 24h layer (the embedded 24h view).
+    for rt in ("last_1m", "last_3m"):
+        res = asyncio.run(generate_one(pid, rt, None, None, data, allow_low_coverage=True))
+        assert res and res.get("pdf_bytes"), f"PAM {pid} failed to render {rt}"
+        snap = res["snapshot_24h"]
+        assert snap is not None and "status_24h" in snap
+        assert "Last 24 Hours" in _pdf_text(res)
+    print("PASS: R28.009 PAM renders through the library with the 24h layer")
+
+
+# =====================================================================
 # Standalone runner
 # =====================================================================
 
@@ -3887,6 +4043,16 @@ if __name__ == "__main__":
         test_ut_007_rr_floor_excluded_from_statistics,
         test_ut_008_priority_consistent_with_triage,
         test_ut_009_pdf_has_summary_line_and_tier_consistent_grade,
+        # Round 28 — 24h triage layer + client-scoped patient library
+        test_r28_001_24h_episodic_subtable_present_or_empty_note,
+        test_r28_002_24h_uses_same_episode_engine,
+        test_r28_003_24h_summary_plain_language_reflects_episodes,
+        test_r28_004_24h_status_same_severity_logic_scoped,
+        test_r28_005_windows_explicitly_labeled,
+        test_r28_006_library_folder_discovered_not_hardcoded,
+        test_r28_007_patient_not_loadable_cross_client,
+        test_r28_008_api_patients_client_scoped,
+        test_r28_009_pam_renders_through_library_with_24h_layer,
     ]
 
     passed = 0

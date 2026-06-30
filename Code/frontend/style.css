@@ -1036,6 +1036,41 @@ input:focus + .slider {
   padding: var(--space-lg);
 }
 
+/* ── 24h triage layer (Round 28) ──────────────────────────────────────── */
+
+.snapshot-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  color: #fff;
+  font-weight: 700;
+  border-radius: 8px;
+  padding: 0.6rem 0.9rem;
+  margin-bottom: var(--space-sm);
+}
+.snapshot-banner .banner-left {
+  font-size: 1rem;
+  letter-spacing: 0.02em;
+}
+.snapshot-banner .banner-right {
+  font-size: 0.8rem;
+  font-weight: 600;
+  opacity: 0.92;
+}
+.snapshot-summary {
+  margin-top: var(--space-sm);
+  font-size: 0.9rem;
+  color: var(--gray-600, #4b5563);
+}
+.subsection-title {
+  margin-top: var(--space-md);
+  margin-bottom: var(--space-xs);
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--gray-700, #374151);
+}
+
 /* ── Context Grid ────────────────────────────────────────────────────── */
 
 .stats-panel {

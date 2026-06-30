@@ -24,6 +24,7 @@ class ReportRequest(BaseModel):
     start: Optional[str] = None  # ISO date string for custom range
     end: Optional[str] = None
     month: Optional[str] = None  # MedHab month key, e.g. "2026-04" (range_type="month")
+    client: Optional[str] = None  # Client/library id, e.g. "medhab" / "pam_health" (Round 28)
     use_ai: bool = False         # Toggle AI-powered narrative
 
 
