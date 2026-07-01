@@ -190,18 +190,7 @@
         <div class="warning-text" id="warning-text"></div>
       </section>
 
-      <!-- STATUS TIMELINE -->
-      <section class="report-card phase-timeline" id="phase-timeline" style="display: none">
-        <h2 class="section-title">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
-          </svg>
-          Patient's Clinical Status Over the Period
-        </h2>
-        <div class="phases-container" id="phases-container"></div>
-      </section>
-
-      <!-- 24-HOUR SNAPSHOT -->
+      <!-- 24-HOUR SNAPSHOT (leads the report, ahead of the 30-day strip) -->
       <section class="report-card" id="section-snapshot" style="display: none">
         <h2 class="section-title">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
@@ -209,12 +198,12 @@
           </svg>
           Last 24 Hours
         </h2>
-        <!-- 24h color status banner (separate from the 30-day tier) -->
+        <!-- 24h color status banner (the 30-day tier lives in the header) -->
         <div id="snapshot-banner" class="snapshot-banner" style="display: none"></div>
         <div class="table-wrapper">
           <table class="clinical-table">
             <thead>
-              <tr><th>Vital</th><th>Avg</th><th>Min</th><th>Max</th></tr>
+              <tr><th>Vital Stat</th><th>Avg</th><th>Min</th><th>Max</th></tr>
             </thead>
             <tbody id="snapshot-tbody"></tbody>
           </table>
@@ -227,12 +216,23 @@
         <div class="table-wrapper" id="snapshot-events-wrap" style="display: none">
           <table class="clinical-table" id="snapshot-events-table">
             <thead>
-              <tr><th>Date</th><th>Time Span</th><th>Duration</th><th>Episodes</th><th>Condition</th><th>Avg</th><th>Min</th><th>Max</th><th>Comment</th></tr>
+              <tr><th>Time Span</th><th>Duration</th><th>Episodes</th><th>Condition</th><th>Avg</th><th>Min</th><th>Max</th><th>Comment</th></tr>
             </thead>
             <tbody id="snapshot-events-tbody"></tbody>
           </table>
         </div>
         <p id="snapshot-events-none" class="no-data" style="display: none">No episodic events in the last 24 hours.</p>
+      </section>
+
+      <!-- STATUS TIMELINE -->
+      <section class="report-card phase-timeline" id="phase-timeline" style="display: none">
+        <h2 class="section-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+          </svg>
+          Patient's Clinical Status Over the Period
+        </h2>
+        <div class="phases-container" id="phases-container"></div>
       </section>
 
       <!-- SECTION 1: NARRATIVE -->

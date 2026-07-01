@@ -424,40 +424,58 @@ def _build_footer(report, st):
     return []
 
 
-def _build_24h_status_banner(snap, page_w):
-    """Round 28 Item 2 — a prominent, color-filled banner classifying the LAST
-    24 HOURS only. Same severity engine as the 30-day tier, scoped to 24h, so
-    the two windows can legitimately disagree (e.g. RED over 30d, NORMAL in the
-    last 24h). Each window is labeled explicitly so they never read as a
-    contradiction. Returns [] when there is no 24h status."""
-    status = snap.get("status_24h")
-    if not status:
-        return []
-    fill = _BANNER_FILL.get(status, _BANNER_FILL[TriageLabels.GREEN])
-    word = _BANNER_WORD.get(status, "NORMAL")
+def render_24h_status_strip(snap, page_w, st):
+    """The Last-24h status as a phase-strip-style bar of colored CONDITION blocks
+    — the same look as the 30-day 'Patient clinical status' strip, scoped to the
+    last 24h. Each block shows the condition and its clock time span (a TIMING,
+    since the window is the last 24h — not a date). A quiet window renders a
+    single green 'within normal range' bar. Block colors come from the shared
+    threshold-legend map, so they match the 30-day strip and the legend."""
+    from reportlab.lib.units import inch
+    from reportlab.lib.colors import HexColor
     from reportlab.lib.styles import ParagraphStyle as _PS
-    banner_style = _PS("banner24h", fontName="Helvetica-Bold", fontSize=11,
-                       leading=13, textColor=colors.white)
-    # Left: the 24h verdict. Right: the 30-day tier, so the nurse sees both
-    # windows side by side and knows which color refers to which window.
-    left = Paragraph(f"Last 24 Hours: {word}", banner_style)
-    status_30d = snap.get("status_30d")
-    right_txt = ""
-    if status_30d:
-        right_txt = f"30-Day Tier: {str(status_30d).upper()}"
-    right_style = _PS("banner24h_r", fontName="Helvetica", fontSize=8,
-                      leading=10, textColor=colors.white, alignment=2)
-    right = Paragraph(right_txt, right_style)
-    bt = Table([[left, right]], colWidths=[page_w * 0.62, page_w * 0.38])
-    bt.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, -1), fill),
+
+    events = snap.get("events") or []
+    if not events:
+        cell = Paragraph(
+            "<b>Last 24 Hours: within normal range</b>",
+            _PS('s24_norm', parent=st['phase_label'], alignment=1,
+                textColor=HexColor('#FFFFFF'), fontSize=8.5, leading=10))
+        t = Table([[cell]], colWidths=[page_w], rowHeights=[0.34 * inch])
+        t.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, -1), HexColor(_NON_CONDITION_BLOCK_BG['normal'])),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ]))
+        return [t, Spacer(1, 4)]
+
+    n = len(events)
+    widths = [page_w / n] * n   # equal width — few blocks over a 24h window
+    cells = []
+    for e in events:
+        ptype = e.get('phase_type') or e.get('brief_phase_type') or ''
+        bg, fg = strip_block_colors(ptype)
+        # Same "Heart Rate" -> "HR" abbreviation as the 30-day strip.
+        label = _html.escape(str(e.get('category', '') or '').replace(' (brief)', '').replace('Heart Rate', 'HR'))
+        span = _html.escape(str(e.get('time_span', '') or ''))
+        s = _PS(f"s24_{ptype}", parent=st['phase_label'], alignment=1,
+                textColor=HexColor(fg), fontSize=7, leading=8.5, splitLongWords=0)
+        cells.append(Paragraph(f"<b>{label}</b><br/><font size='5.5'>{span}</font>", s))
+    tbl = Table([cells], colWidths=widths, rowHeights=[0.40 * inch])
+    style = [
         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('LEFTPADDING', (0, 0), (-1, -1), 8),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 8),
-        ('TOPPADDING', (0, 0), (-1, -1), 6),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-    ]))
-    return [bt, Spacer(1, 4)]
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 3),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 3),
+        ('TOPPADDING', (0, 0), (-1, -1), 1),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 1),
+        ('INNERGRID', (0, 0), (-1, -1), 1.5, colors.white),
+    ]
+    for i, e in enumerate(events):
+        bg, _fg = strip_block_colors(e.get('phase_type') or e.get('brief_phase_type') or '')
+        style.append(('BACKGROUND', (i, 0), (i, 0), HexColor(bg)))
+    tbl.setStyle(TableStyle(style))
+    return [tbl, Spacer(1, 4)]
 
 
 def _build_24h_events_subtable(snap, st):
@@ -467,9 +485,12 @@ def _build_24h_events_subtable(snap, st):
     narrative row-builder scoped to 24h, so this is purely presentation."""
     rows = snap.get("events") or []
     evt_cfg = RENDER_CONFIG["events_table"]
-    table_columns = evt_cfg.get("columns", [])
+    # Drop the Date column for the 24h table — the window IS the last 24h, so the
+    # date is implied; the Time Span column carries the clock timing instead.
+    table_columns = [c for c in evt_cfg.get("columns", []) if c.get("key") != "date"]
     if not table_columns:
         return []
+    _wsum = sum(c["width"] for c in table_columns) or 1.0
 
     from reportlab.lib.styles import ParagraphStyle as _PS
     evt_cell = _PS("evt_cell24", parent=st["table_cell"], fontSize=6.5, leading=7.5)
@@ -519,8 +540,9 @@ def _build_24h_events_subtable(snap, st):
                 cells.append(Paragraph("", evt_cell))
         pt_data.append(cells)
 
-    base_width = 7.0 * inch
-    widths = [col["width"] * base_width for col in table_columns]
+    base_width = 7.5 * inch  # full content width (page minus 0.5in margins)
+    # Rescale the remaining columns to fill the width the dropped Date freed.
+    widths = [(col["width"] / _wsum) * base_width for col in table_columns]
     pt = Table(pt_data, colWidths=widths)
     pt.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), _HEADER_BG),
@@ -530,8 +552,8 @@ def _build_24h_events_subtable(snap, st):
         ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, _hex("#F9FAFB")]),
         ('LEFTPADDING', (0, 0), (-1, -1), 4),
         ('RIGHTPADDING', (0, 0), (-1, -1), 4),
-        ('TOPPADDING', (0, 0), (-1, -1), 2),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+        ('TOPPADDING', (0, 0), (-1, -1), 1),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 1),
     ]))
     return [sub_head, pt, Spacer(1, 3)]
 
@@ -553,7 +575,7 @@ def _build_snapshot_24h_elements(report, st, page_w):
 
     hr = snap.get("hr", {}) or {}
     rr = snap.get("rr", {}) or {}
-    header = [Paragraph(f"<b>{lbl}</b>", st["table_header"]) for lbl in ("Vital", "Avg", "Min", "Max")]
+    header = [Paragraph(f"<b>{lbl}</b>", st["table_header"]) for lbl in ("Vital Stat", "Avg", "Min", "Max")]
     hr_row = [Paragraph("Heart Rate", st["table_cell"]),
               Paragraph(_cell(hr.get("avg"), "bpm"), st["table_cell"]),
               Paragraph(_cell(hr.get("min"), "bpm"), st["table_cell"]),
@@ -572,11 +594,11 @@ def _build_snapshot_24h_elements(report, st, page_w):
         ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, _hex("#F9FAFB")]),
         ('LEFTPADDING', (0, 0), (-1, -1), 4),
         ('RIGHTPADDING', (0, 0), (-1, -1), 4),
-        ('TOPPADDING', (0, 0), (-1, -1), 2),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+        ('TOPPADDING', (0, 0), (-1, -1), 1),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 1),
     ]))
     elems = [Paragraph("Last 24 Hours", st["section_head"])]
-    elems += _build_24h_status_banner(snap, page_w)
+    elems += render_24h_status_strip(snap, page_w, st)
     elems.append(tbl)
     if snap.get("coverage_pct", 100) < 75:
         note = (f"Limited data in the final 24h "
@@ -1773,15 +1795,19 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
         for num_idx, (orig_idx, row) in enumerate(_sorted_pre[:max_rows_pre], start=1):
             phase_number_map[orig_idx] = num_idx
 
-    # R28.1 — Clinical Alerting Thresholds legend at the TOP, above the phase
-    # strip: the strip's colors carry the condition meaning, so the key must
-    # precede the thing it explains (moved here from the end of the report;
-    # rendered once, not duplicated). Compact color key only — the episode
-    # definition note rides at the bottom to keep this band small.
+    # Clinical Alerting Thresholds legend at the top — the shared color key for
+    # BOTH the 24h status strip and the 30-day phase strip below it, so the key
+    # precedes the things it explains. Compact color key only; the episode
+    # definition note rides at the bottom.
     elements.extend(_build_threshold_legend(st, include_note=False))
-    # R28.2 — clear vertical gap so the legend and the phase strip read as two
-    # distinct bands (they sit directly adjacent now that the legend is on top).
-    elements.append(Spacer(1, 8))
+    elements.append(Spacer(1, 4))
+
+    # Last 24 Hours triage layer leads the body — the nurse's daily-decision
+    # block (24h status strip + snapshot + summary + episodic events) comes
+    # FIRST, ahead of the 30-day phase strip.
+    elements.extend(_build_snapshot_24h_elements(report, st, page_w))
+    # Clear vertical gap so the 24h band and the 30-day strip read as distinct.
+    elements.append(Spacer(1, 4))
 
     # FIX 6: Episode timeline bar — red bars on gray for episodic events
     all_eps = _v(report, "episodes", [])
@@ -1823,10 +1849,10 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
         # R14 F2: Build per-day episode map for episode_hours coloring mode
         episode_day_map = _build_episode_day_map(episodes) if episodes else None
 
-        # Strip width reads from the same shared symbol as the candlestick
-        # chart Image directly below it, so the two always share a baseline
-        # on the same page. Previously set to content_width * 0.5 (R22.D),
-        # which left the strip visibly narrower than the chart.
+        # Strip spans the full content width (7.5in) so it lines up with the
+        # tables and the episode-timeline bar above it. It reads the same
+        # settings symbol as the candlestick chart, so both stay in lockstep
+        # (R25 invariant) — the symbol is now the full content width.
         strip_width = settings.plot_width_inches
         # Clinical status as phase BLOCKS (matches the web app), not the
         # day-timeline strip. One colored block per finding, sized by days.
@@ -1959,9 +1985,8 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
 
         epd_str = format_episodes_per_day(total_episodes, period_days)
 
-        # Item 2 — 24h snapshot: top of the body, below the strip, above the
-        # 30-day summary (metrics) table.
-        elements.extend(_build_snapshot_24h_elements(report, st, page_w))
+        # (The Last 24 Hours triage layer is rendered earlier, ahead of the
+        # phase strip — see above.)
 
         # FIX 1 — concise overview line + priority grade, matching the web app
         # (same engine data: narrative.opening + tier-consistent report_priority).
@@ -2153,7 +2178,7 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
                 pt_data.append(row_cells)
             
             # Create Table with widths defined in config
-            base_width = 7.0 * inch  # full page minus margins
+            base_width = 7.5 * inch  # full content width (page minus 0.5in margins)
             widths = [col["width"] * base_width for col in table_columns]
             pt = Table(pt_data, colWidths=widths)
             pt.setStyle(TableStyle([
@@ -2164,8 +2189,8 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
                 ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, _hex("#F9FAFB")]),
                 ('LEFTPADDING', (0, 0), (-1, -1), 4),
                 ('RIGHTPADDING', (0, 0), (-1, -1), 4),
-                ('TOPPADDING', (0, 0), (-1, -1), 2),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+                ('TOPPADDING', (0, 0), (-1, -1), 1),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 1),
             ]))
             elements.append(pt)
             # R11 Fix 2a: Overflow line
@@ -2194,8 +2219,8 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
         _actions = _v(report, 'suggested_actions', []) or []
         if _actions:
             from reportlab.lib.styles import ParagraphStyle as _PS
-            _act_style = _PS('act_bullet', parent=st['body'], fontSize=7.5, leading=9.5, leftIndent=8)
-            elements.append(Spacer(1, 4))
+            _act_style = _PS('act_bullet', parent=st['body'], fontSize=7.5, leading=8.5, leftIndent=8)
+            elements.append(Spacer(1, 2))
             elements.append(Paragraph("<b>Suggested Clinical Review Actions</b>", st["section_head"]))
             for a in _actions:
                 elements.append(Paragraph(f"• {_html.escape(str(a))}", _act_style))

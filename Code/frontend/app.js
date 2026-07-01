@@ -328,11 +328,28 @@ function renderSnapshotBanner(snap) {
     if (!el) return;
     const status = snap.status_24h;
     if (!status || !BANNER_24H[status]) { el.style.display = "none"; return; }
-    const b = BANNER_24H[status];
-    const tier30 = snap.status_30d ? `30-Day Tier: ${String(snap.status_30d).toUpperCase()}` : "";
-    el.style.background = b.fill;
-    el.innerHTML = `<span class="banner-left">Last 24 Hours: ${b.word}</span>`
-                 + `<span class="banner-right">${escapeHtml(tier30)}</span>`;
+    // The Last-24h status renders as a phase-strip-style bar of colored
+    // condition blocks (same look as the 30-day Patient clinical status strip,
+    // scoped to 24h), each showing the condition and its clock time span (a
+    // timing, not a date). A quiet window shows a single green
+    // "within normal range" block.
+    const events = snap.events || [];
+    el.className = "phases-container snapshot-24h-strip";
+    el.style.background = "";
+    if (events.length === 0) {
+        el.innerHTML = `<div class="phase-block normal" style="flex:1">`
+            + `<span class="phase-label">Last 24 Hours: within normal range</span></div>`;
+        el.style.display = "flex";
+        return;
+    }
+    el.innerHTML = events.slice(0, 6).map((e) => {
+        const type = e.phase_type || e.brief_phase_type || "";
+        const label = String(e.category || "").replace(" (brief)", "").replace("Heart Rate", "HR");
+        const span = e.time_span || "";
+        return `<div class="phase-block ${type}" style="flex:1">`
+            + `<span class="phase-label">${escapeHtml(label)}</span>`
+            + `<span class="phase-dates">${escapeHtml(span)}</span></div>`;
+    }).join("");
     el.style.display = "flex";
 }
 
@@ -369,8 +386,8 @@ function renderSnapshotEvents(snap) {
         const minCell = bare(row.min), maxCell = bare(row.max);
         const th = (row.total_hours != null ? row.total_hours : (row.sustained_hours != null ? row.sustained_hours : 0));
         const tr = document.createElement("tr");
+        // No Date column — the window is the last 24h, so Time Span carries the timing.
         tr.innerHTML = `
-            <td>${escapeHtml(row.date || "")}</td>
             <td>${escapeHtml(row.time_span || "")}</td>
             <td>${th}h</td>
             <td>${row.episodes != null ? row.episodes : ""}</td>

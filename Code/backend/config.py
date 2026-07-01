@@ -410,7 +410,7 @@ class Settings(BaseSettings):
     # strip Table directly above it. Both render paths must read this symbol
     # so the strip tracks the chart automatically if the value is ever
     # parameterized per report type.
-    plot_width_inches: float = 7.0
+    plot_width_inches: float = 7.5  # full content width, matches the tables (page minus 0.5in margins)
     # R15 F: reduced from 3.5 to 3.0 inches to recover page-1 budget after the
     # R15 additions (longer trajectory line, split burden phrasing, new threshold rows).
     candlestick_height_inches: float = 3.0

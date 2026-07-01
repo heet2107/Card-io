@@ -3778,13 +3778,18 @@ def test_r28_004_24h_status_same_severity_logic_scoped():
 
 
 def test_r28_005_windows_explicitly_labeled():
-    """The 24h banner and the 30-day tier each label their window explicitly, so
-    a color is never ambiguous about which window it refers to."""
+    """The 24h window is labeled by the "Last 24 Hours" section, and the 30-day
+    classification stays labeled in the report header (the triage badge) — so a
+    color is never ambiguous about which window it refers to. The 30-day tier is
+    not duplicated inside the 24h band."""
+    from backend.pdf_render import _TRIAGE_BADGE_TEXT
     res = _MH("2026-04", "Garrett")
     text = _pdf_text(res)
-    assert "Last 24 Hours:" in text, "24h banner must label its window"
-    assert "30-Day Tier:" in text, "banner must name the 30-day tier explicitly"
-    print("PASS: R28.005 24h banner and 30-day tier each label their window")
+    assert "Last 24 Hours" in text, "24h section must label its window"
+    # 30-day tier lives in the header now, not inside the 24h band.
+    badge_tail = _TRIAGE_BADGE_TEXT[res["triage"]].split(": ", 1)[1]
+    assert badge_tail in text, "30-day tier must still be labeled in the header"
+    print("PASS: R28.005 24h section labels its window; 30-day tier labeled in header")
 
 
 def test_r28_006_library_folder_discovered_not_hardcoded():
