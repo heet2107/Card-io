@@ -2825,8 +2825,9 @@ def test_r24_008_30day_report_type_per_patient():
         assert "30DayPeriod" in bg_src, "batch_generate.py must include the 30DayPeriod report tuple"
         print("PASS: R24.8 30DayPeriod tuple present (cohort not regenerated)")
         return
-    thirty_pdfs = list(reports_dir.glob("*_30DayPeriod.pdf"))
-    # Cohort has 9 active patients (S(Bed) is quality-gated out).
+    # Recurse — the R28 cohorts live in client sub-folders (pam_health_r28/,
+    # medhab/), not at the top level.
+    thirty_pdfs = list(reports_dir.rglob("*_30DayPeriod.pdf"))
     assert len(thirty_pdfs) >= 1, "expected at least one 30DayPeriod PDF in cohort"
     print(f"PASS: R24.8 {len(thirty_pdfs)} 30DayPeriod PDFs in cohort")
 
@@ -2989,9 +2990,11 @@ def _extract_strip_and_chart_widths(pdf_path):
         strip_candidates.sort(reverse=True)
         strip_width = strip_candidates[0][1]
 
-        # Widest embedded image is the candlestick chart.
-        image_widths = [info["bbox"][2] - info["bbox"][0] for info in page.get_image_info()]
-        assert image_widths, f"no images found on page 1 of {pdf_path}"
+        # The candlestick chart is the widest embedded image; in the R28 two-page
+        # layout it sits on the charts page (the last page), not page 1.
+        chart_page = doc[-1]
+        image_widths = [info["bbox"][2] - info["bbox"][0] for info in chart_page.get_image_info()]
+        assert image_widths, f"no images found on the charts page of {pdf_path}"
         chart_width = max(image_widths)
 
         return strip_width, chart_width
@@ -3010,15 +3013,15 @@ def test_r25_phase_strip_width_matches_candlestick():
     """
     from pathlib import Path
     repo_root = Path(__file__).resolve().parent.parent.parent.parent
-    reports_dir = repo_root / "Reports"
+    reports_dir = repo_root / "Reports" / "pam_health_r28"
     targets = [
-        reports_dir / "01_EG_FullPeriod.pdf",
-        reports_dir / "05_JB_FullPeriod.pdf",
+        reports_dir / "02_EG_90DayPeriod.pdf",
+        reports_dir / "04_JB_90DayPeriod.pdf",
     ]
     available = [p for p in targets if p.exists()]
     assert available, (
-        f"No reference PDFs found under {reports_dir}; regenerate the cohort "
-        f"(python -m backend.batch_generate) before running this invariant."
+        f"No R28 reference PDFs found under {reports_dir}; regenerate the cohort "
+        f"(python pam_r28_batch.py) before running this invariant."
     )
 
     for pdf_path in available:
