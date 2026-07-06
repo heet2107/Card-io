@@ -505,6 +505,27 @@ async def list_clients():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/summary")
+async def library_summary(client: str | None = None):
+    """24h library summary — every patient in one library, critical first, 24h
+    only. Same engine as the per-patient banner (statuses match). Scoped to a
+    single client; never mixes libraries."""
+    try:
+        from .library_summary import build_library_summary
+        clients = discover_clients()
+        if not clients:
+            return {"client": None, "label": "", "patients": []}
+        if client is None:
+            client = clients[0]
+        if client not in clients:
+            raise HTTPException(status_code=404, detail=f"Unknown library '{client}'.")
+        return build_library_summary(client)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/patients")
 async def list_patients_endpoint(client: str | None = None):
     """Return the patient list for a library. ``?client=<id>`` scopes the list

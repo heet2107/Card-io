@@ -2440,3 +2440,127 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
         pass  # PyPDF2 not available — skip assertion
 
     return pdf_bytes
+
+
+# ── 24h Library Summary report ───────────────────────────────────────────────
+
+# Gray for data-gap statuses (NO DATA / LOW DATA) — distinct from the vivid
+# GREEN so a gap is never read as confirmed-normal.
+_SUMMARY_GRAY = _hex("#6B7280")
+
+
+def _summary_status_fill(row):
+    """Fill color for a patient's status chip. Data-gap rows (NO/LOW DATA) read
+    gray; real classifications use the vivid banner colors (same as the
+    per-patient 24h banner)."""
+    label = row.get("display_label", "")
+    if label in ("NO DATA", "LOW DATA"):
+        return _SUMMARY_GRAY
+    return _BANNER_FILL.get(row.get("status"), _BANNER_FILL[TriageLabels.GREEN])
+
+
+def generate_library_summary_pdf(summary: dict, generated_date: str) -> bytes:
+    """Render a library's 24h summary: one compact row per patient, critical on
+    top. 24h ONLY — no 30-day data. Same 24h engine as the per-patient banner,
+    so a future web/email view stays consistent.
+
+    Each row is a single Table row (Status | Patient | Events | Summary | Vitals)
+    so a portal link can later wrap the row without restructuring.
+    """
+    import io as _io
+    st = _styles()
+    buf = _io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=letter,
+        leftMargin=0.5 * inch, rightMargin=0.5 * inch,
+        topMargin=0.5 * inch, bottomMargin=0.5 * inch,
+    )
+    page_w = letter[0] - 1.0 * inch
+    elements = []
+
+    # ── Header band ──────────────────────────────────────────────────────
+    title = f"{summary.get('label', summary.get('client', ''))}: 24 Hour Patient Summary"
+    right_style = ParagraphStyle("ls_hdr_r", parent=st["title"], fontSize=8,
+                                 alignment=TA_RIGHT)
+    hdr = Table([[Paragraph(f"<b>{_html.escape(title)}</b>", st["title"]),
+                  Paragraph(f"Generated {_html.escape(generated_date)}", right_style)]],
+                colWidths=[page_w * 0.7, page_w * 0.3])
+    hdr.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), _HEADER_BG),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    elements.append(hdr)
+    elements.append(Spacer(1, 3))
+    elements.append(Paragraph(
+        "Each patient's most recent 24 hours — critical first. 24-hour view only; "
+        "no 30-day data. Read down and stop at green.", st["caption"]))
+    elements.append(Spacer(1, 4))
+
+    # ── Per-patient rows ─────────────────────────────────────────────────
+    cell = ParagraphStyle("ls_cell", parent=st["table_cell"], fontSize=7.5, leading=9)
+    chip = ParagraphStyle("ls_chip", parent=st["table_cell"], fontSize=8,
+                          fontName="Helvetica-Bold", textColor=colors.white,
+                          alignment=TA_CENTER, leading=9)
+    note_style = ParagraphStyle("ls_note", parent=st["legend"], fontSize=6, leading=7)
+    hdr_cell = ParagraphStyle("ls_hcell", parent=st["table_header"], fontSize=7.5, leading=9)
+
+    def _vitals(row):
+        hr, rr = row.get("hr"), row.get("rr")
+        def _fmt(ch, unit):
+            if not ch or ch.get("avg") is None:
+                return "—"
+            return f"{ch['avg']:.0f}/{ch['min']:.0f}/{ch['max']:.0f}"
+        if hr is None and rr is None:
+            return "—"
+        return f"HR {_fmt(hr,'bpm')}<br/>RR {_fmt(rr,'brpm')}"
+
+    cols = ["Status", "Patient", "24h Events", "24h Summary", "Vitals (avg/min/max)"]
+    header_row = [Paragraph(f"<b>{c}</b>", hdr_cell) for c in cols]
+    data = [header_row]
+    for row in summary.get("patients", []):
+        if row.get("event_count"):
+            ev = f"{row['event_count']} · " + ", ".join(row.get("conditions", []))
+        else:
+            ev = "None"
+        summ = _html.escape(row.get("summary", ""))
+        if row.get("note"):
+            summ += f"<br/><font size='6' color='#6B7280'><i>{_html.escape(row['note'])}</i></font>"
+        data.append([
+            Paragraph(f"<b>{_html.escape(row.get('display_label', ''))}</b>", chip),
+            Paragraph(f"<b>{_html.escape(str(row.get('patient', '')))}</b>", cell),
+            Paragraph(_html.escape(ev), cell),
+            Paragraph(summ, cell),
+            Paragraph(_vitals(row), cell),
+        ])
+
+    widths = [w * page_w for w in (0.11, 0.14, 0.18, 0.39, 0.18)]
+    tbl = Table(data, colWidths=widths, repeatRows=1)
+    style = [
+        ("BACKGROUND", (0, 0), (-1, 0), _HEADER_BG),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("GRID", (0, 0), (-1, -1), 0.5, _BORDER),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+    ]
+    for i, row in enumerate(summary.get("patients", []), start=1):
+        style.append(("BACKGROUND", (0, i), (0, i), _summary_status_fill(row)))
+    tbl.setStyle(TableStyle(style))
+    elements.append(tbl)
+
+    elements.append(Spacer(1, 6))
+    n = len(summary.get("patients", []))
+    elements.append(Paragraph(
+        f"{n} patient(s) in the {_html.escape(summary.get('label',''))} library. "
+        f"Status is each patient's last-24h classification (same engine as the "
+        f"per-patient report banner).", st["legend"]))
+
+    doc.build(elements)
+    buf.seek(0)
+    return buf.read()

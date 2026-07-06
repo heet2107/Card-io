@@ -35,12 +35,21 @@ const $customRange   = document.getElementById("custom-range");
 const $customRangeEnd = document.getElementById("custom-range-end");
 const $btnGenerate   = document.getElementById("btn-generate");
 const $btnSmartWeek  = document.getElementById("btn-smart-week");
+const $btnSummary    = document.getElementById("btn-summary");
 const $btnDownload   = document.getElementById("btn-download");
 const $btnExportJson = document.getElementById("btn-export-json");
 const $loading       = document.getElementById("loading-overlay");
 const $reportContainer = document.getElementById("report-container");
+const $summaryContainer = document.getElementById("summary-container");
 const $emptyState    = document.getElementById("empty-state");
 const $aiToggle      = document.getElementById("ai-toggle");
+
+// Status chip colors for the 24h library summary (match the PDF).
+const SUMMARY_STATUS_FILL = {
+    "RED": "#DC2626", "YELLOW": "#D97706", "ELEVATED": "#D97706",
+    "GREEN": "#16A34A", "NORMAL": "#16A34A",
+    "LOW DATA": "#6B7280", "NO DATA": "#6B7280",
+};
 
 // ── State ───────────────────────────────────────────────────────────────────
 
@@ -126,6 +135,7 @@ async function loadPatients() {
 
         $btnGenerate.disabled = false;
         $btnSmartWeek.disabled = false;
+        if ($btnSummary) $btnSummary.disabled = false;  // library loaded → summary available
 
         // Populate the Time Window dropdown for this library (data-driven).
         await loadMonths();
@@ -258,6 +268,7 @@ $rangeSelect.addEventListener("change", () => {
 });
 
 $btnGenerate.addEventListener("click", generateReport);
+if ($btnSummary) $btnSummary.addEventListener("click", showLibrarySummary);
 $btnSmartWeek.addEventListener("click", smartWeekDetect);
 $btnDownload.addEventListener("click", downloadPDF);
 $btnExportJson.addEventListener("click", exportJSON);
@@ -401,11 +412,64 @@ function renderSnapshotEvents(snap) {
     });
 }
 
+// ── 24h Library Summary (all patients in the library, critical first) ───────
+async function showLibrarySummary() {
+    if (!currentClient) return;
+    showLoading(true);
+    try {
+        const res = await fetch(`${API_BASE}/api/summary?client=${encodeURIComponent(currentClient)}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const s = await res.json();
+
+        document.getElementById("summary-title").textContent = `${s.label}: 24 Hour Patient Summary`;
+        const now = new Date();
+        document.getElementById("summary-gen").textContent =
+            "Generated " + now.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
+
+        const bare = (ch) => (!ch || ch.avg == null) ? "—"
+            : `${Math.round(ch.avg)}/${Math.round(ch.min)}/${Math.round(ch.max)}`;
+        const tbody = document.getElementById("summary-tbody");
+        tbody.innerHTML = "";
+        (s.patients || []).forEach((r) => {
+            const label = r.display_label || String(r.status || "").toUpperCase();
+            const fill = SUMMARY_STATUS_FILL[label] || "#6B7280";
+            const ev = r.event_count
+                ? `${r.event_count} · ${(r.conditions || []).join(", ")}`
+                : "None";
+            let summ = escapeHtml(r.summary || "");
+            if (r.note) summ += `<br><span class="summary-note">${escapeHtml(r.note)}</span>`;
+            const vit = (r.hr == null && r.rr == null) ? "—"
+                : `HR ${bare(r.hr)}<br>RR ${bare(r.rr)}`;
+            const tr = document.createElement("tr");
+            tr.innerHTML =
+                `<td><span class="status-chip" style="background:${fill}">${escapeHtml(label)}</span></td>`
+                + `<td><strong>${escapeHtml(String(r.patient || ""))}</strong></td>`
+                + `<td>${escapeHtml(ev)}</td>`
+                + `<td>${summ}</td>`
+                + `<td>${vit}</td>`;
+            tbody.appendChild(tr);
+        });
+
+        // Show the summary view, hide the per-patient report + empty state.
+        $reportContainer.style.display = "none";
+        $emptyState.style.display = "none";
+        $summaryContainer.style.display = "block";
+        window.scrollTo(0, 0);
+    } catch (err) {
+        alert("Error loading library summary: " + err.message);
+        console.error(err);
+    } finally {
+        showLoading(false);
+    }
+}
+
 async function generateReport() {
     const patientId = $patientSelect.value;
     const rangeType = $rangeSelect.value;
     const useAI     = $aiToggle.checked;
     if (!patientId) return;
+    // Leaving the summary view — show the per-patient report instead.
+    if ($summaryContainer) $summaryContainer.style.display = "none";
 
     const body = {
         patient_id: patientId,

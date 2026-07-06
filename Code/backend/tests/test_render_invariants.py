@@ -3876,6 +3876,151 @@ def test_r28_010_strip_color_matches_legend_swatch():
 
 
 # =====================================================================
+# 24h Library Summary (LS) — the remote-nurse morning triage report
+# =====================================================================
+
+def test_ls_001_one_summary_per_library_covers_all_patients():
+    """One summary per library, covering every patient in that library, and no
+    cross-library leakage."""
+    from backend.client_registry import discover_clients, list_patients
+    from backend.library_summary import build_library_summary
+    for client in discover_clients():
+        s = build_library_summary(client)
+        assert s["client"] == client
+        pts = list_patients(client)
+        assert len(s["patients"]) == len(pts), (client, len(s["patients"]), len(pts))
+        client_set = set(pts)
+        assert all(r["patient"] in client_set for r in s["patients"]), "no cross-library patient"
+    print("PASS: LS.001 one summary per library, covers every patient, no leakage")
+
+
+def test_ls_002_sorted_critical_first():
+    """Band order RED → YELLOW → LOW/NO DATA → GREEN, enforced by the sort rule
+    (not incidental to a dataset). An unreviewable (low/no-data) patient must
+    never sort below a green — the nurse stops scanning at green."""
+    from backend.library_summary import _sort_key, status_band_rank, NO_DATA
+    from backend.config import TriageLabels
+
+    red      = {"patient": "r",  "status": TriageLabels.RED,    "burden_hours": 2}
+    yel_lo   = {"patient": "y1", "status": TriageLabels.YELLOW, "burden_hours": 3}
+    yel_hi   = {"patient": "y2", "status": TriageLabels.YELLOW, "burden_hours": 9}
+    nodata   = {"patient": "nd", "status": NO_DATA,             "burden_hours": 0}
+    lowdata  = {"patient": "ld", "status": TriageLabels.GREEN, "severe_low": True, "burden_hours": 0}
+    green    = {"patient": "g",  "status": TriageLabels.GREEN,  "burden_hours": 0}
+
+    # Band ranks are explicit and monotone: RED < YELLOW < attention < GREEN.
+    assert status_band_rank(red) == 0
+    assert status_band_rank(yel_hi) == 1
+    assert status_band_rank(nodata) == 2
+    assert status_band_rank(lowdata) == 2, "a severely-low-coverage GREEN is LOW DATA"
+    assert status_band_rank(green) == 3
+    # The key safety property: LOW DATA and NO DATA both rank ABOVE green.
+    assert status_band_rank(lowdata) < status_band_rank(green)
+    assert status_band_rank(nodata) < status_band_rank(green)
+
+    # RED, then YELLOW (higher burden first), then the attention band
+    # (ld/nd both rank 2, tie-broken by name), then GREEN last.
+    order = [r["patient"] for r in sorted([green, red, yel_lo, yel_hi, nodata, lowdata], key=_sort_key)]
+    assert order == ["r", "y2", "y1", "ld", "nd", "g"], order
+
+    # And on the real cohort, using the SAME band rule the sort uses: no green
+    # ever precedes a low/no-data row.
+    from backend.library_summary import build_library_summary
+    s = build_library_summary("pam_health")
+    bands = [status_band_rank(r) for r in s["patients"]]
+    assert bands == sorted(bands), f"cohort rows not critical-first by band: {bands}"
+    last_attention = max((i for i, b in enumerate(bands) if b <= 2), default=-1)
+    first_green = next((i for i, b in enumerate(bands) if b == 3), len(bands))
+    assert last_attention < first_green, "a green sorted above a low/no-data row"
+    print("PASS: LS.002 band order RED→YELLOW→LOW/NO DATA→GREEN; low/no-data above green")
+
+
+def test_ls_003_status_matches_per_patient_24h_banner():
+    """Each patient's summary 24h status equals the per-patient 24h banner status
+    — same engine (compute_24h_layer), same window, cross-report parity. Holds
+    for LOW DATA patients too (no contradiction when the nurse clicks through),
+    across every library."""
+    import asyncio
+    from backend.client_registry import discover_clients, load_client_data
+    from backend.library_summary import build_library_summary, NO_DATA
+    from backend.triage_24h import compute_24h_layer
+    checked_low = 0
+    for client in discover_clients():
+        data = load_client_data(client)
+        s = build_library_summary(client)
+        for r in s["patients"]:
+            if r["status"] == NO_DATA:
+                continue
+            layer = asyncio.run(compute_24h_layer(r["patient"], data[r["patient"]]))
+            assert layer is not None, (client, r["patient"])
+            # The underlying classification must match the per-patient banner,
+            # including for LOW DATA rows (whose true status is still GREEN).
+            assert r["status"] == layer["status_24h"], (
+                client, r["patient"], r["status"], layer["status_24h"])
+            if r.get("display_label") == "LOW DATA":
+                checked_low += 1
+    assert checked_low >= 1, "expected at least one LOW DATA patient to verify parity on"
+    print(f"PASS: LS.003 status == per-patient 24h banner (incl. {checked_low} LOW DATA)")
+
+
+def test_ls_004_window_from_final_timestamp_no_hardcode():
+    """The 24h window is derived from each patient's final data timestamp — no
+    hardcoded date, no patient identity in the logic (source inspection)."""
+    import inspect, re
+    from backend import library_summary
+    src = inspect.getsource(library_summary.compute_patient_24h_summary)
+    assert 'df["timestamp"].max()' in src, "window must derive from the data's final timestamp"
+    assert "hours=24" in src, "window must be 24h"
+    assert not re.search(r"20\d\d-\d\d-\d\d", src), "no hardcoded calendar date"
+    assert "patient" in inspect.signature(library_summary.compute_patient_24h_summary).parameters, \
+        "patient id is passed as a label, not branched on"
+    print("PASS: LS.004 24h window from final timestamp, no hardcoded date")
+
+
+def test_ls_005_no_30day_data():
+    """No 30-day data anywhere in the summary — 24h only (source inspection)."""
+    import inspect
+    from backend import library_summary
+    src = inspect.getsource(library_summary)
+    for forbidden in ("detect_phases", "compute_full_stats", "generate_narrative",
+                      "30Day", "apply_window", "compute_stats("):
+        assert forbidden not in src, f"summary must be 24h-only (found {forbidden!r})"
+    # It DOES use the 24h engine.
+    assert "compute_last_24h_snapshot" in src and "build_24h_summary" in src
+    print("PASS: LS.005 no 30-day data in the summary (24h engine only)")
+
+
+def test_ls_006_insufficient_data_flagged_not_green():
+    """A patient with no recent data reads NO DATA (never a silent GREEN) with no
+    fabricated events; a severely-low-coverage GREEN reads LOW DATA and is not
+    buried among confirmed greens."""
+    import pandas as pd
+    from backend.library_summary import compute_patient_24h_summary, NO_DATA, _sort_key
+    from backend.config import TriageLabels
+
+    cols = ["timestamp", "hr_avg", "hr_min", "hr_max", "rr_avg", "rr_min", "rr_max"]
+    empty = pd.DataFrame({c: pd.Series([], dtype="float64") for c in cols})
+    empty["timestamp"] = pd.to_datetime(empty["timestamp"])
+    r = compute_patient_24h_summary("X", empty)
+    assert r["status"] == NO_DATA and r["status"] != TriageLabels.GREEN, r["status"]
+    assert r["event_count"] == 0 and not r["conditions"], "no fabricated events"
+
+    # One hour of normal readings → GREEN by classification but ~4% coverage →
+    # shown as LOW DATA and sorted into the attention band (rank 2), not buried.
+    ts = pd.to_datetime(["2026-05-31 08:00", "2026-05-31 08:20", "2026-05-31 08:40"])
+    sparse = pd.DataFrame({
+        "timestamp": ts,
+        "hr_avg": [70, 71, 69], "hr_min": [66, 67, 65], "hr_max": [74, 75, 73],
+        "rr_avg": [15, 15, 16], "rr_min": [12, 12, 13], "rr_max": [18, 18, 19],
+    })
+    r2 = compute_patient_24h_summary("Y", sparse)
+    assert r2["status"] == TriageLabels.GREEN, "vitals are normal → GREEN classification"
+    assert r2["display_label"] == "LOW DATA", "severely-low coverage GREEN reads LOW DATA"
+    assert _sort_key(r2)[0] == 2, "LOW DATA green sorts into the attention band, above greens"
+    print("PASS: LS.006 insufficient/low-data flagged honestly, no fabricated events")
+
+
+# =====================================================================
 # Standalone runner
 # =====================================================================
 
@@ -4075,6 +4220,13 @@ if __name__ == "__main__":
         test_r28_008_api_patients_client_scoped,
         test_r28_009_pam_renders_through_library_with_24h_layer,
         test_r28_010_strip_color_matches_legend_swatch,
+        # 24h Library Summary
+        test_ls_001_one_summary_per_library_covers_all_patients,
+        test_ls_002_sorted_critical_first,
+        test_ls_003_status_matches_per_patient_24h_banner,
+        test_ls_004_window_from_final_timestamp_no_hardcode,
+        test_ls_005_no_30day_data,
+        test_ls_006_insufficient_data_flagged_not_green,
     ]
 
     passed = 0

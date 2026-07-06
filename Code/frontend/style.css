@@ -1278,3 +1278,34 @@ input:focus + .slider {
     break-inside: avoid;
   }
 }
+
+/* ── 24h Library Summary ──────────────────────────────────────────────── */
+
+.summary-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+.summary-gen {
+  font-size: 0.8rem;
+  color: var(--gray-500, #6b7280);
+  white-space: nowrap;
+}
+.status-chip {
+  display: inline-block;
+  min-width: 66px;
+  text-align: center;
+  padding: 3px 8px;
+  border-radius: 6px;
+  color: #fff;
+  font-weight: 700;
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+}
+.summary-note {
+  color: var(--gray-500, #6b7280);
+  font-style: italic;
+  font-size: 0.72rem;
+}
+#summary-table td { vertical-align: middle; }
