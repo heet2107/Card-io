@@ -24,7 +24,7 @@ Usage:
 """
 
 from __future__ import annotations
-import sys, asyncio, traceback, argparse, time
+import sys, asyncio, traceback, argparse, time, zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -62,6 +62,8 @@ async def main(folder: Path, outdir: Path, month: str | None = None):
     summary_results: list[dict | None] = []
     report_num = 0
     flagged: list[str] = []  # patients where coverage / low-confidence shifted triage notes
+    # (month_folder, filename) for each written report — drives the zip layout.
+    written: list[tuple[str, str]] = []
 
     for i, spec in enumerate(specs, start=1):
         patient = spec["patient"]
@@ -91,6 +93,8 @@ async def main(folder: Path, outdir: Path, month: str | None = None):
             report_num += 1
             fname = f"{report_num:02d}_{safe}_{month_label}_30DayPeriod.pdf"
             (outdir / fname).write_bytes(result["pdf_bytes"])
+            # month_label is e.g. "April_2026" → zip folder "April".
+            written.append((month_label.split("_")[0], fname))
             size_kb = len(result["pdf_bytes"]) / 1024
             print(f"     ✅  {fname}  ({size_kb:.0f} KB)  triage={result['triage']}  "
                   f"eps={result['episodes']}  coverage={result['coverage']}")
@@ -121,6 +125,18 @@ async def main(folder: Path, outdir: Path, month: str | None = None):
     )
     (outdir / "BatchSummary_MedHab.pdf").write_bytes(summary_bytes)
     print(f"\n   ✅  BatchSummary_MedHab.pdf  ({len(summary_bytes)//1024} KB)")
+
+    # ── Package as one zip, with each month in its own folder ─────────────────
+    # Reports are grouped into per-month folders (April/, May/, …) inside the
+    # zip; the cross-month batch summary sits at the zip root.
+    zip_path = outdir.parent / "CardioReport_MedHab_R28.zip"
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for month_folder, fname in written:
+            zf.write(outdir / fname, arcname=f"{month_folder}/{fname}")
+        zf.write(outdir / "BatchSummary_MedHab.pdf", arcname="BatchSummary_MedHab.pdf")
+    months = sorted({m for m, _ in written})
+    print(f"   📦  {zip_path}  ({zip_path.stat().st_size//1024} KB, "
+          f"{len(written)} reports across folders: {', '.join(months)})")
 
     # ── Final status ──────────────────────────────────────────────────────────
     success = len(valid)
