@@ -21,7 +21,7 @@ Output (Reports/pam_health_r28/ + a zip alongside it):
     <NN>_<Patient>_30DayPeriod.pdf
     <NN>_<Patient>_90DayPeriod.pdf
     BatchSummary_PAM_Health.pdf
-    CardioReport_PAM_Health_R28.zip   (all of the above)
+    CardioReport_PAM_Health.zip   (all of the above)
 
 Usage:
     cd /Users/heetbarot/Documents/Cardio-io/Code
@@ -138,7 +138,7 @@ async def main(outdir: Path):
     print(f"\n   ✅  BatchSummary_PAM_Health.pdf  ({len(summary_bytes)//1024} KB)")
 
     # ── Package as one zip ────────────────────────────────────────────────────
-    zip_path = outdir.parent / "CardioReport_PAM_Health_R28.zip"
+    zip_path = outdir.parent / "CardioReport_PAM_Health.zip"
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for f in sorted(outdir.glob("*.pdf")):
             zf.write(f, arcname=f.name)

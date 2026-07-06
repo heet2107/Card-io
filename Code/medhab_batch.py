@@ -129,7 +129,7 @@ async def main(folder: Path, outdir: Path, month: str | None = None):
     # ── Package as one zip, with each month in its own folder ─────────────────
     # Reports are grouped into per-month folders (April/, May/, …) inside the
     # zip; the cross-month batch summary sits at the zip root.
-    zip_path = outdir.parent / "CardioReport_MedHab_R28.zip"
+    zip_path = outdir.parent / "CardioReport_MedHab.zip"
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for month_folder, fname in written:
             zf.write(outdir / fname, arcname=f"{month_folder}/{fname}")
