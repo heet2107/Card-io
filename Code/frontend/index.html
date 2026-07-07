@@ -14,7 +14,7 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="style.css?v=1.0.4" />
+    <link rel="stylesheet" href="style.css?v=1.0.5" />
   </head>
   <body>
     <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -55,6 +55,9 @@
           <select id="patient-select">
             <option value="">Loading patients…</option>
           </select>
+          <button id="btn-summary" class="btn-linklike" disabled title="24-hour triage summary of every patient in this library, critical first">
+            ☰ 24h Library Summary
+          </button>
         </div>
         <div class="control-group">
           <label for="range-select">Time Window</label>
@@ -96,12 +99,6 @@
               <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
             </svg>
             Most Critical Week
-          </button>
-          <button id="btn-summary" class="btn btn-secondary" disabled title="24-hour triage summary of every patient in this library, critical first">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-              <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>
-            </svg>
-            24h Library Summary
           </button>
           <button id="btn-generate" class="btn btn-primary" disabled>
             <svg
@@ -452,7 +449,15 @@
       <section class="report-card" id="section-library-summary">
         <div class="summary-head">
           <h2 class="section-title" id="summary-title">24 Hour Patient Summary</h2>
-          <span class="summary-gen" id="summary-gen"></span>
+          <div class="summary-head-right">
+            <span class="summary-gen" id="summary-gen"></span>
+            <button id="btn-summary-download" class="btn btn-secondary">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15">
+                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+              </svg>
+              Download PDF
+            </button>
+          </div>
         </div>
         <p class="caption" id="summary-caption">Each patient's most recent 24 hours — critical first. 24-hour view only; no 30-day data. Read down and stop at green.</p>
         <div class="table-wrapper">
@@ -489,6 +494,6 @@
       </div>
     </div>
 
-    <script src="app.js?v=native4"></script>
+    <script src="app.js?v=native5"></script>
   </body>
 </html>

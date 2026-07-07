@@ -36,6 +36,7 @@ const $customRangeEnd = document.getElementById("custom-range-end");
 const $btnGenerate   = document.getElementById("btn-generate");
 const $btnSmartWeek  = document.getElementById("btn-smart-week");
 const $btnSummary    = document.getElementById("btn-summary");
+const $btnSummaryDownload = document.getElementById("btn-summary-download");
 const $btnDownload   = document.getElementById("btn-download");
 const $btnExportJson = document.getElementById("btn-export-json");
 const $loading       = document.getElementById("loading-overlay");
@@ -269,6 +270,7 @@ $rangeSelect.addEventListener("change", () => {
 
 $btnGenerate.addEventListener("click", generateReport);
 if ($btnSummary) $btnSummary.addEventListener("click", showLibrarySummary);
+if ($btnSummaryDownload) $btnSummaryDownload.addEventListener("click", downloadLibrarySummary);
 $btnSmartWeek.addEventListener("click", smartWeekDetect);
 $btnDownload.addEventListener("click", downloadPDF);
 $btnExportJson.addEventListener("click", exportJSON);
@@ -413,6 +415,8 @@ function renderSnapshotEvents(snap) {
 }
 
 // ── 24h Library Summary (all patients in the library, critical first) ───────
+let summaryClient = null;  // the library the on-screen summary was built for
+
 async function showLibrarySummary() {
     if (!currentClient) return;
     showLoading(true);
@@ -420,6 +424,7 @@ async function showLibrarySummary() {
         const res = await fetch(`${API_BASE}/api/summary?client=${encodeURIComponent(currentClient)}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const s = await res.json();
+        summaryClient = s.client || currentClient;
 
         document.getElementById("summary-title").textContent = `${s.label}: 24 Hour Patient Summary`;
         const now = new Date();
@@ -460,6 +465,31 @@ async function showLibrarySummary() {
         console.error(err);
     } finally {
         showLoading(false);
+    }
+}
+
+async function downloadLibrarySummary() {
+    const client = summaryClient || currentClient;
+    if (!client) return;
+    try {
+        const res = await fetch(`${API_BASE}/api/summary/pdf?client=${encodeURIComponent(client)}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        let fname = `CardioReport_${client}_24h_Summary.pdf`;
+        const cd = res.headers.get("Content-Disposition") || "";
+        const m = cd.match(/filename="?([^"]+)"?/);
+        if (m) fname = m[1];
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = fname;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+    } catch (err) {
+        alert("Error downloading summary PDF: " + err.message);
+        console.error(err);
     }
 }
 

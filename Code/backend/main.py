@@ -526,6 +526,31 @@ async def library_summary(client: str | None = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/summary/pdf")
+async def library_summary_pdf(client: str | None = None):
+    """Downloadable PDF of a library's 24h summary (same renderer as the batch)."""
+    try:
+        from datetime import datetime
+        from .library_summary import build_library_summary
+        from .pdf_render import generate_library_summary_pdf
+        clients = discover_clients()
+        if not clients:
+            raise HTTPException(status_code=404, detail="No libraries found.")
+        if client is None:
+            client = clients[0]
+        if client not in clients:
+            raise HTTPException(status_code=404, detail=f"Unknown library '{client}'.")
+        summary = build_library_summary(client)
+        pdf = generate_library_summary_pdf(summary, datetime.now().strftime("%B %d, %Y"))
+        fname = f"CardioReport_{client}_24h_Summary.pdf"
+        return Response(content=pdf, media_type="application/pdf",
+                        headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/patients")
 async def list_patients_endpoint(client: str | None = None):
     """Return the patient list for a library. ``?client=<id>`` scopes the list

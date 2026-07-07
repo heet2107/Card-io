@@ -1309,3 +1309,32 @@ input:focus + .slider {
   font-size: 0.72rem;
 }
 #summary-table td { vertical-align: middle; }
+
+/* ── 24h Library Summary: compact button under the patient list ────────── */
+
+.btn-linklike {
+  margin-top: 6px;
+  align-self: flex-start;
+  background: none;
+  border: none;
+  padding: 2px 0;
+  color: var(--brand-700, #1d4ed8);
+  font-family: var(--font);
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+.btn-linklike:hover:not(:disabled) {
+  color: var(--brand-900, #1e3a5f);
+  text-decoration: underline;
+}
+.btn-linklike:disabled {
+  color: var(--gray-400, #9ca3af);
+  cursor: not-allowed;
+}
+.summary-head-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+}
