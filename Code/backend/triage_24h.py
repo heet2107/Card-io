@@ -63,7 +63,10 @@ async def compute_24h_layer(patient_id: str, df) -> Optional[dict]:
             use_llm_override=False, quality_warnings=[], phases=raw_phases24,
         )
         if isinstance(narr24, dict):
-            rows = narr24.get("phase_table_rows", []) or []
+            # A1 — the Last-24h episodic-events table is per-episode too, ranked
+            # CHRONOLOGICALLY (the 30-day Major Findings table ranks by severity).
+            rows = narr24.get("episode_table_rows", []) or []
+            rows = sorted(rows, key=lambda r: str(r.get("start_time", "")))
     except Exception as e:
         print(f"DEBUG 24h layer: narrative row build failed ({e}); rendering events-empty")
         rows = []

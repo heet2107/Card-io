@@ -181,7 +181,7 @@ async def generate_one(patient_id: str, range_type: str,
         snapshot_24h["status_30d"] = triage
 
     chart_b64      = generate_combined_chart(df, episodes)
-    histogram_b64  = generate_histogram(df)
+    histogram_b64  = generate_histogram(df, hr_p5=hr_stats.p5, hr_p95=hr_stats.p95)
     positional_b64 = generate_positional_chart(df)
     activity_b64   = generate_activity_trend_chart(df)
 

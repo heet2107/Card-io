@@ -204,6 +204,133 @@ def _row_comment(phase_type: str) -> str:
         "review_phrase_by_phase_type", {}).get(phase_type, "")
 
 
+# ── A2: single-source HR P5–P95 spread formatter ─────────────────────────────
+
+def format_spread_bounds(p5: float, p95: float) -> dict:
+    """A2: the ONE place that turns the canonical (Compute-stage) HR percentiles
+    into display strings. Every surface — page-1 sentence, page-2 pattern
+    observation, and the histogram annotation — formats through this helper, so
+    the three can never diverge (the pre-fix report showed 53–93 on page 1, 52–92
+    on page 2, and no bounds on the chart).
+
+    The spread is derived from the SAME rounded bounds it displays (hi − lo), so
+    the printed spread always equals the printed bounds' difference — independent
+    rounding of ``p95 − p5`` was itself a source of off-by-one skew.
+    """
+    lo = int(round(p5))
+    hi = int(round(p95))
+    spread = hi - lo
+    return {
+        "p5": str(lo),
+        "p95": str(hi),
+        "spread": str(spread),
+        "spread_int": spread,
+        "bounds": f"{lo} to {hi}",
+        "text": f"{spread} bpm ({lo} to {hi})",
+    }
+
+
+# ── A1: per-episode events-table rows ────────────────────────────────────────
+
+def _duration_descriptor(hours: int) -> str:
+    """B6: plain-text duration severity for a single episode, kept off the
+    value-severity colour axis. 'sustained' vs 'brief' by config threshold."""
+    return "sustained" if int(hours or 0) >= settings.episode_sustained_min_hours else "brief"
+
+
+def _low_coverage_dates(activity_trend) -> set:
+    """B3: the set of calendar dates the monitoring-activity chart itself colours
+    as reduced coverage (recorded hours below the config threshold). Reused as a
+    lookup so a flagged episode falling on such a day gets the caution caveat —
+    no new coverage math, just the per-day hours already computed in Compute."""
+    import pandas as pd
+    dates = set()
+    days = getattr(activity_trend, "days", None) if activity_trend is not None else None
+    for d in days or []:
+        try:
+            if float(getattr(d, "hours", 0)) < settings.reduced_coverage_hours_per_day:
+                dates.add(pd.Timestamp(getattr(d, "date")).normalize())
+        except Exception:
+            continue
+    return dates
+
+
+
+def build_episode_table_rows(episodes, hr_stats, rr_stats, activity_trend=None):
+    """A1: one row per DETECTED episode for the Major Findings and Last-24h
+    episodic-events tables. Time Span and Duration are both sourced from the SAME
+    episode object, so they always agree — unlike the prior per-condition rollup,
+    which rendered one representative episode's clock window beside a summed
+    duration ("5 PM to 6 PM / 13h / 4 episodes"). Detection is untouched; this is
+    pure table assembly.
+
+    avg/min/max come only from the episode's own channel (condition-matched
+    structured fields), HR clipped to physiologic bounds. A B3 reduced-coverage
+    caveat is appended to the comment when the episode overlaps a low-coverage
+    day. Rows carry severity_score (Major Findings ranks by it, desc) and
+    start_time (the 24h table ranks chronologically).
+    """
+    import pandas as pd
+    from .config import PHASE_LABELS, CONDITION_TO_PHASE_TYPE
+
+    low_cov = _low_coverage_dates(activity_trend)
+    rows = []
+    for ep in episodes:
+        pt = CONDITION_TO_PHASE_TYPE.get(getattr(ep, "condition", None))
+        if not pt:
+            continue
+        is_hr = pt in _HR_PHASE_TYPES
+        is_rr = pt in _RR_PHASE_TYPES
+        start = pd.Timestamp(ep.start_time)
+        dur = int(getattr(ep, "duration_hours", 1) or 1)
+
+        if is_hr:
+            avg_v, mn_v, mx_v, unit, metric = ep.avg_hr, ep.min_hr, ep.max_hr, "bpm", "hr_bpm"
+        elif is_rr:
+            avg_v, mn_v, mx_v, unit, metric = ep.avg_rr, ep.min_rr, ep.max_rr, "brpm", "rr_brpm"
+        else:
+            avg_v = mn_v = mx_v = None
+            unit, metric = "", None
+
+        def _fmt(v):
+            if v is None:
+                return "—"
+            if metric == "hr_bpm":
+                cv, clip = _clip_physiologic(v, "hr_bpm")
+                return f"{cv:.0f}{'*' if clip else ''} {unit}"
+            return f"{v:.0f} {unit}"
+
+        comment = _row_comment(pt)
+        # B3 — flag (don't inline) the reduced-coverage caveat: the renderer marks
+        # the row and prints the full caveat once as a table footnote, so every
+        # affected comment cell stays compact (inlining the sentence ballooned
+        # cells to ~4 lines and pushed dense reports to a third page).
+        overlaps_low = False
+        if low_cov:
+            end = start + pd.Timedelta(hours=dur)
+            span_days = pd.date_range(start.normalize(), end.normalize(), freq="D")
+            overlaps_low = any(d.normalize() in low_cov for d in span_days)
+
+        rows.append({
+            "reduced_coverage": overlaps_low,
+            "category": PHASE_LABELS.get(pt, pt),
+            "phase_type": pt,
+            "date": start.strftime("%b %d"),
+            "start_time": ep.start_time,
+            "time_span": _episode_time_span(ep),
+            "total_hours": dur,
+            "duration_hours": dur,
+            "duration_descriptor": _duration_descriptor(dur),
+            "average": _fmt(avg_v),
+            "min": _fmt(mn_v),
+            "max": _fmt(mx_v),
+            "comment": comment,
+            "severity_score": int(getattr(ep, "severity_score", 0) or 0),
+            "cooccurrence": bool(getattr(ep, "cooccurrence", False)),
+        })
+    return rows
+
+
 # ── Phase Description Templates ──────────────────────────────────────────────
 
 def _phase_description(p_type, label, date_range, ph_hr, p_eps, hr_stats, rr_stats):
@@ -671,14 +798,15 @@ def generate_deterministic_narrative(
     # ── FIX 1: Part 3 — Closing ──
     closing_parts = []
 
-    # R13 Fix 5: HR spread — use unified gate shared with chart and pattern obs
-    hr_spread = hr_stats.p95 - hr_stats.p5
+    # R13 Fix 5: HR spread — use unified gate shared with chart and pattern obs.
+    # A2: bounds/spread strings come from the single format_spread_bounds helper
+    # so page 1, page 2, and the histogram annotation are byte-identical.
     _sample_hours = data_quality.total_hours if hasattr(data_quality, 'total_hours') else (data_quality.get('total_hours', 0) if isinstance(data_quality, dict) else 0)
     if should_render_spread_annotation(int(_sample_hours), hr_stats.p5, hr_stats.p95):
+        _sb = format_spread_bounds(hr_stats.p5, hr_stats.p95)
         closing_parts.append(
-            f"The P5 to P95 heart rate spread was {hr_spread:.0f} bpm "
-            f"({hr_stats.p5:.0f} to {hr_stats.p95:.0f}), indicating "
-            f"significant cardiac variability."
+            f"The P5 to P95 heart rate spread was {_sb['text']}, "
+            f"indicating significant cardiac variability."
         )
 
     # Coupling
@@ -768,9 +896,18 @@ def generate_deterministic_narrative(
             findings_hr_avg = dominant_row.get('phase_hr_avg')
             findings_rr_avg = dominant_row.get('phase_rr_avg')
 
+    # A1 — one row per detected episode for the rendered events tables. Kept
+    # separate from phase_table_rows (the per-condition aggregate that still
+    # feeds the burden rollup, headline, actions, strip numbering, and batch
+    # summary). Only the Major Findings and Last-24h tables consume this list.
+    episode_table_rows = build_episode_table_rows(
+        episodes, hr_stats, rr_stats, activity_trend=activity_trend
+    )
+
     narrative_dict = {
         'opening': opening,
         'phase_table_rows': phase_table_rows,
+        'episode_table_rows': episode_table_rows,
         'closing': closing,
         'trend': trend_assessment,
         'action_posture': action_posture,
@@ -831,7 +968,18 @@ def _build_phase_actions(
         return []
 
     phase_table_rows = phase_table_rows or []
-    actions: list[str] = []
+
+    # Follow-up Fix 1 — the action cap is CONDITION AWARE, not a flat count.
+    # `condition_actions` is the floor: one primary action per condition present
+    # in the window. The floor is NEVER trimmed — a flat count cap could silently
+    # drop a whole condition's guidance on a multi-condition patient (e.g. lose
+    # S (Chair)'s Low-HR "review beta blockers and AV-node agents; ECG if
+    # symptomatic" line). Only `optional_actions` (trajectory / bed / activity)
+    # are subject to the count budget, trimmed first. If the floor alone exceeds
+    # the budget, the floor wins and the block overflows — that surfaces as a
+    # page-budget question, never as dropped clinical content.
+    condition_actions: list[str] = []
+    optional_actions: list[str] = []
 
     # FIX 2/3/4 — one bullet per condition TYPE, from the type's highest-burden
     # row (the row the table headlines for that type). Values come straight from
@@ -845,7 +993,17 @@ def _build_phase_actions(
         cur = by_type.get(pt)
         if cur is None or (r.get('total_hours', 0) or 0) > (cur.get('total_hours', 0) or 0):
             by_type[pt] = r
-    for r in sorted(by_type.values(), key=lambda x: -(x.get('total_hours', 0) or 0)):
+    # Order condition actions by clinical severity tier (most concerning first)
+    # so display order matches the events table; since the floor keeps ALL of
+    # them, none is ever at risk of being trimmed.
+    from .config import RENDER_CONFIG as _RC
+    _priority = _RC.get("events_table", {}).get("priority_order", [])
+
+    def _sev_rank(pt):
+        return _priority.index(pt) if pt in _priority else 999
+    for r in sorted(by_type.values(),
+                    key=lambda x: (_sev_rank(x.get('phase_type')),
+                                   -(x.get('total_hours', 0) or 0))):
         pt = r['phase_type']
         label = PHASE_LABELS.get(pt, pt)
         is_low = 'low' in pt
@@ -859,71 +1017,76 @@ def _build_phase_actions(
         if trig:
             detail.append(f"{trig_word} {trig}")
         stat = f" ({', '.join(detail)})" if detail else ""
-        actions.append(f"{label}{stat}: {phrase}".strip())
+        condition_actions.append(f"{label}{stat}: {phrase}".strip())
 
-    # Overall trajectory action if multiple display phases
+    # Overall trajectory action if multiple display phases (OPTIONAL)
     if phases:
         from .config import PHASE_LABELS as _PL
         disp = [p for p in phases if _PL.get(p.get("type"), None) is not None]
         if len(disp) >= 2:
             hr_spread = hr_stats.p95 - hr_stats.p5
-            actions.append(
+            optional_actions.append(
                 f"Overall trajectory shows {len(disp)} unstable phases with "
                 f"{hr_spread:.0f} bpm variability. Consider increasing monitoring "
                 "frequency and lowering escalation threshold."
             )
 
-    # ── Bed-specific actions ──
+    # ── Bed-specific actions (OPTIONAL) ──
     if bed_summary is not None:
         if bed_summary.days_above_16h > 0:
-            actions.append(
+            optional_actions.append(
                 f"Time in bed exceeded 16 hours on {bed_summary.days_above_16h} days. "
                 "Consider evaluating prolonged recumbency and repositioning schedule."
             )
         if bed_summary.alert_days > 0:
-            actions.append(
+            optional_actions.append(
                 f"Low heart rate alerts on {bed_summary.alert_days} days may correlate with "
                 "prolonged recumbency. Evaluate for position-dependent low heart rate."
             )
         if (bed_summary.hr_min_high_bed_days > 0 and bed_summary.hr_min_normal_days > 0
                 and abs(bed_summary.hr_min_normal_days - bed_summary.hr_min_high_bed_days) > 1):
-            actions.append(
+            optional_actions.append(
                 f"Heart rate minimum averaged {bed_summary.hr_min_high_bed_days:.0f} bpm on "
                 f"high-bed-time days versus {bed_summary.hr_min_normal_days:.0f} bpm on normal "
                 "days. Compare with positional hemodynamic assessment."
             )
 
-    # ── Activity Trend Connection ──
+    # ── Activity Trend Connection (OPTIONAL) ──
     if activity_trend and activity_trend.days:
         first_h = activity_trend.days[0].hours
         last_h = activity_trend.days[-1].hours
         if first_h > 0:
             decline_pct = ((first_h - last_h) / first_h) * 100
             if decline_pct >= settings.coverage_decline_threshold_pct:
-                actions.append(
+                optional_actions.append(
                     f"Daily recorded hours declined from {first_h:.1f} to "
                     f"{last_h:.1f} ({decline_pct:.0f}%) over the monitoring period."
                 )
 
-    # Deduplicate: if two actions end up identical, merge them
+    # Deduplicate across both lists, preserving the floor.
     seen = set()
-    unique_actions = []
-    for a in actions:
-        if a not in seen:
-            seen.add(a)
-            unique_actions.append(a)
 
-    # Fallback if no phase-based actions
-    if not unique_actions:
+    def _dedup(items):
+        out = []
+        for a in items:
+            if a not in seen:
+                seen.add(a)
+                out.append(a)
+        return out
+    condition_actions = _dedup(condition_actions)
+    optional_actions = _dedup(optional_actions)
+
+    # Fallback if no condition/optional actions at all.
+    if not condition_actions and not optional_actions:
         if episodes:
-            unique_actions.append(
-                "If event frequency or duration is increasing over days: consider earlier "
-                "provider notification, even without overt symptoms."
-            )
-        else:
-            unique_actions.append("No specific clinical actions indicated; continue routine monitoring per protocol.")
+            return ["If event frequency or duration is increasing over days: consider earlier "
+                    "provider notification, even without overt symptoms."]
+        return ["No specific clinical actions indicated; continue routine monitoring per protocol."]
 
-    return unique_actions[:settings.max_actions]
+    # Condition floor is untrimmable; optional items fill the remaining budget.
+    # If the floor alone exceeds max_actions, keep the whole floor anyway.
+    budget = max(len(condition_actions), settings.max_actions)
+    return (condition_actions + optional_actions)[:budget]
 
 # ── FIX 35: Trajectory Comparison ────────────────────────────────────────────
 

@@ -344,6 +344,16 @@ class Settings(BaseSettings):
     activity_green_threshold: int = 20
     activity_amber_threshold: int = 12
     monitoring_target_hours: int = 12
+    # A-fixes (data-integrity pass): a day with fewer than this many recorded
+    # hours is a "reduced monitoring coverage" day — episodes overlapping such a
+    # day get the B3 interpret-with-caution caveat. Set to the good-coverage
+    # target (20h/day) so any day below full "Good coverage" counts as reduced —
+    # matching the review note that flagged "several days under 20h".
+    reduced_coverage_hours_per_day: int = 20
+    # B6 — an episode whose own duration is at/above this many hours reads
+    # "sustained"; below it reads "brief". Plain-text descriptor on the per-
+    # episode row (duration severity), separate from the value-severity badge.
+    episode_sustained_min_hours: int = 3
     activity_color_green: str = "#27864A"
     activity_color_amber: str = "#D4850A"
     activity_color_red: str = "#C0392B"
@@ -498,7 +508,11 @@ class Settings(BaseSettings):
     candlestick_critical_linewidth: float = 4.5
 
     max_events_table: int = Field(default=6, description="Maximum rows in the events table (sorted by severity).")
-    max_actions: int = Field(default=5, description="Maximum suggested action bullets.")
+    # Budget for OPTIONAL action bullets (trajectory / bed / activity). The one
+    # primary action per present condition is a floor that is never trimmed by
+    # this cap (see _build_phase_actions, follow-up Fix 1), so this only bounds
+    # how many optional items ride along.
+    max_actions: int = Field(default=5, description="Target total action bullets; the per-condition floor overrides it.")
     chart_dpi: int = Field(default=200, description="Chart resolution in DPI.")
     hr_spread_annotation_min: float = Field(default=20.0, description="Only annotate histogram spread if P5-P95 exceeds this value (bpm).")
 
@@ -734,8 +748,11 @@ RENDER_CONFIG = {
         # and RSanchez 90DayPeriod (fallback reports with extra header note)
         # spilled to page 3. Bypass-the-cap approach gives brief rows visibility
         # without the page-fit risk.
-        "max_rows": 6,
-        "overflow_template": "+ {n} additional condition(s) across {conditions}; details in monitoring data.",
+        # A1 — with one row per episode (rather than per condition) the table can
+        # be taller, so the cap is 4 severity-ranked episodes; the rest roll into
+        # the overflow line. Keeps every report within its two-page budget.
+        "max_rows": 4,
+        "overflow_template": "+ {n} additional episode(s) across {conditions}; details in monitoring data.",
         # R22.D: Episodes/day inserted between Longest Continuous and Average,
         # per Sajol May 5 call ("Why would we not put it here? It's a pretty
         # powerful statement, right? When you see four episodes a day").
@@ -743,16 +760,22 @@ RENDER_CONFIG = {
         # Unified episodic events table — Sajol's columns (June 19 call). Avg/Min/
         # Max are three SEPARATE columns of bare numbers (unit omitted; Condition
         # implies channel). Widths sum to 1.00.
+        # A1 — one row per detected EPISODE (not a per-condition rollup), so
+        # Time Span and Duration always describe the same episode and agree. The
+        # "Episodes" column was dropped: for a genuine per-episode row it is
+        # always 1, and rendering it beside a single-episode Time Span next to a
+        # summed Duration was the source of the "5 PM to 6 PM / 13h / 4 episodes"
+        # contradiction. Widths re-summed to 1.00 after the drop; Duration widened
+        # to carry the plain-text duration descriptor ("sustained, 7h" — B6).
         "columns": [
             {"key": "date",       "label": "Date",       "width": 0.07},
-            {"key": "time_span",  "label": "Time Span",  "width": 0.17},
-            {"key": "duration",   "label": "Duration",   "width": 0.08},
-            {"key": "episodes",   "label": "Episodes",   "width": 0.09},
-            {"key": "condition",  "label": "Condition",  "width": 0.16},
+            {"key": "time_span",  "label": "Time Span",  "width": 0.19},
+            {"key": "duration",   "label": "Duration",   "width": 0.12},
+            {"key": "condition",  "label": "Condition",  "width": 0.17},
             {"key": "avg",        "label": "Avg",        "width": 0.07},
             {"key": "min",        "label": "Min",        "width": 0.07},
             {"key": "max",        "label": "Max",        "width": 0.07},
-            {"key": "comment",    "label": "Comment",    "width": 0.22},
+            {"key": "comment",    "label": "Comment",    "width": 0.24},
         ],
         "priority_order": [
             "very_high_hr", "very_low_hr", "high_hr", "low_hr",
@@ -827,15 +850,21 @@ RENDER_CONFIG = {
         # the same condition; data-shape-agnostic, never per-patient). This is the
         # ONLY comment text in scope; the report does not add a separate actions
         # block. Change wording here in one place.
+        # B2 — the suggested action must ESCALATE with the value tier, or the
+        # tiers add reading burden without clinical work. Each phrase is selected
+        # by rule from the phase_type alone (no patient identity), stays
+        # conditional/suggested (never directive), and keeps >= 3 specificity
+        # tokens. Ladder per channel: monitor/recheck → assess + consider ECG →
+        # obtain ECG now + prompt provider review.
         "review_phrase_by_phase_type": {
-            "very_low_hr":  "Check pulse and BP; review beta blockers and AV node agents; ECG if symptomatic",
-            "low_hr":       "Check pulse and BP; review beta blockers and AV node agents; ECG if symptomatic",
-            "elevated_hr":  "Check temp, hydration, pain; review for arrhythmia or infection",
-            "high_hr":      "Check temp, hydration, pain; review for arrhythmia or infection",
-            "very_high_hr": "Check temp, hydration, pain; review for arrhythmia or infection",
-            "elevated_rr":  "Check SpO2 and lung sounds; assess for fluid overload or early infection",
-            "high_rr":      "Check SpO2, work of breathing, fever; consider pulmonary cause or CHF",
-            "very_high_rr": "Check SpO2, work of breathing, fever; consider pulmonary cause or CHF",
+            "low_hr":       "Check pulse and BP; review beta blockers and AV-node agents; ECG if symptomatic",
+            "very_low_hr":  "Obtain ECG now; hold/review AV-node and beta-blocker agents; provider review",
+            "elevated_hr":  "Monitor and recheck; check temp, hydration, pain",
+            "high_hr":      "Consider ECG; assess infection, pain, hydration",
+            "very_high_hr": "Obtain ECG; evaluate for arrhythmia; prompt provider review",
+            "elevated_rr":  "Check SpO2 and lung sounds; monitor for fluid overload",
+            "high_rr":      "Check SpO2, work of breathing, fever; consider CHF",
+            "very_high_rr": "Check SpO2 and work of breathing; assess respiratory compromise; prompt review",
         },
         "min_specificity_tokens": 3,
         "required_token_categories": ["condition", "count_or_duration", "suggested_assessment"],

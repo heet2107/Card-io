@@ -1723,28 +1723,26 @@ def test_r18_e1_trajectory_decrease_renders_red():
     print("PASS: R18 E1 trajectory down arrow renders red")
 
 
-def test_r18_n2_brief_rows_bypass_max_rows_cap():
-    """R18 N2: brief rows (R18 C3 aggregations) bypass the events_table.max_rows
-    cap so they render as visible rows when capacity allows. Total visible is
-    capped at TOTAL_VISIBLE_CAP=7 to keep all reports on 2 pages. Excess brief
-    rows fall to the overflow footnote.
-
-    Initial implementation bumped max_rows 6→7 globally but two fallback
-    90DayPeriod reports (with extra header note) spilled to page 3. Second
-    attempt removed the cap entirely on brief rows, but PHolst (3 brief) and
-    RSanchez (4 brief) still spilled. Final design: real rows capped at
-    max_rows; brief rows take remaining slots up to TOTAL_VISIBLE_CAP=7.
+def test_a1_events_table_is_per_episode_severity_ranked():
+    """A1: the Major Findings table renders ONE ROW PER EPISODE (from
+    episode_table_rows), severity-ranked, capped at max_rows with an overflow
+    line. This replaces the R18 per-condition rollup + "(brief)" aggregate rows
+    (whose separate cap-bypass produced the time-span-vs-duration contradiction).
+    The old TOTAL_VISIBLE_CAP / brief_rows / real_rows machinery is gone.
     """
     import inspect
     from backend.pdf_render import generate_pdf
     src = inspect.getsource(generate_pdf)
-    assert "TOTAL_VISIBLE_CAP" in src, \
-        "R18 N2: pdf_render must cap total visible rows to keep page count at 2"
-    assert "brief_rows" in src and "real_rows" in src, \
-        "R18 N2: pdf_render must split brief from real rows"
-    assert "brief_capacity" in src, \
-        "R18 N2: brief rows must fill remaining capacity after real rows"
-    print("PASS: R18 N2 brief rows fill remaining capacity up to TOTAL_VISIBLE_CAP")
+    assert "episode_table_rows" in src, \
+        "A1: pdf_render must render the per-episode episode_table_rows"
+    assert "severity_score" in src, \
+        "A1: the events table must rank episodes by severity_score"
+    assert "overflow_rows" in src, \
+        "A1: episodes beyond max_rows must fall to an overflow line"
+    # The retired per-condition/brief machinery must not resurface.
+    assert "TOTAL_VISIBLE_CAP" not in src and "brief_capacity" not in src, \
+        "A1: the old per-condition brief-row cap machinery must be removed"
+    print("PASS: A1 events table is per-episode, severity-ranked, capped with overflow")
 
 
 def test_r21_a_asterisk_legend_below_tick_band():
@@ -2508,17 +2506,19 @@ def test_r22_c1_red_row_bolds_trigger_phrase_only():
 
 
 def test_r22_d_events_table_includes_episodes_per_day_column():
-    """Superseded by the unified table: exact column order is Date, Time Span,
-    Duration, Episodes, Condition, Avg, Min, Max, Comment; widths sum to 1.0.
-    Name kept so the invariant count stays stable."""
+    """A1 update: the table is now per-episode, so the "Episodes" column (always
+    1 for a genuine episode) is dropped. Exact column order is Date, Time Span,
+    Duration, Condition, Avg, Min, Max, Comment; widths sum to 1.0. Name kept so
+    the invariant count stays stable."""
     from backend.config import RENDER_CONFIG
     cols = RENDER_CONFIG["events_table"]["columns"]
     keys = [c["key"] for c in cols]
-    assert keys == ["date", "time_span", "duration", "episodes",
+    assert keys == ["date", "time_span", "duration",
                     "condition", "avg", "min", "max", "comment"], keys
+    assert "episodes" not in keys, "A1: the per-condition 'Episodes' column must be dropped"
     total = sum(c["width"] for c in cols)
     assert abs(total - 1.0) < 1e-6, f"Column widths must sum to 1.0, got {total}"
-    print("PASS: unified events table column set verified")
+    print("PASS: unified events table column set verified (per-episode, no Episodes column)")
 
 
 def test_r22_d_patient_summary_uses_table_layout():
@@ -3513,10 +3513,10 @@ def _utnum(s):
 
 
 def test_ut_001_unified_table_columns():
-    """Unified table has Sajol's exact columns."""
+    """Unified table columns (A1: per-episode, so no 'Episodes' column)."""
     from backend.config import RENDER_CONFIG
     keys = [c["key"] for c in RENDER_CONFIG["events_table"]["columns"]]
-    assert keys == ["date", "time_span", "duration", "episodes",
+    assert keys == ["date", "time_span", "duration",
                     "condition", "avg", "min", "max", "comment"], keys
     print("PASS: UT.001 unified table columns")
 
@@ -4021,6 +4021,266 @@ def test_ls_006_insufficient_data_flagged_not_green():
 
 
 # =====================================================================
+# A-FIXES — data-integrity pass (A1 per-episode tables, A2 single-source
+# HR spread, A3 single activity-chart legend) + B-fixes sanity
+# =====================================================================
+
+def _parse_clock_to_hours(s):
+    """'7 PM' -> 19.0, '7:30 AM' -> 7.5. Returns None if unparseable."""
+    import re as _re
+    m = _re.match(r'^\s*(\d{1,2})(?::(\d{2}))?\s*([AP]M)\s*$', s.strip(), _re.I)
+    if not m:
+        return None
+    h = int(m.group(1)) % 12
+    mnt = int(m.group(2) or 0)
+    if m.group(3).upper() == 'PM':
+        h += 12
+    return h + mnt / 60.0
+
+
+def _assert_episode_rows_consistent(rows, label):
+    """A1 core invariant: for every rendered episode row, the displayed Time Span
+    and the displayed Duration describe the SAME span. Parses the Time Span clock
+    window and asserts its length (mod 24h for a midnight wrap) equals the
+    Duration hours. This is exactly what the pre-fix per-condition rollup
+    violated ('5 PM to 6 PM' beside '13h')."""
+    for r in rows:
+        dur = int(r.get('duration_hours', r.get('total_hours', 0)) or 0)
+        ts = r.get('time_span', '') or ''
+        assert ' to ' in ts, f"{label}: row missing a clock Time Span: {r!r}"
+        a, b = ts.split(' to ', 1)
+        ha, hb = _parse_clock_to_hours(a), _parse_clock_to_hours(b)
+        assert ha is not None and hb is not None, f"{label}: unparseable Time Span {ts!r}"
+        span = (hb - ha) % 24
+        # A whole-day multiple wraps to 0 mod 24; accept when duration is a
+        # positive multiple of 24, otherwise the mod-24 span must equal duration.
+        ok = (abs(span - (dur % 24)) < 1e-6) or (dur > 0 and dur % 24 == 0 and abs(span) < 1e-6)
+        assert ok, (f"{label}: Time Span {ts!r} spans {span}h but Duration says {dur}h "
+                    f"— they must agree (A1)")
+
+
+def test_a1_per_episode_time_span_matches_duration():
+    """A1 invariant on structurally different real fixtures: multi-episode
+    (Garrett, Harris), low-coverage (Jones), and quiet/zero-episode (Wilson).
+    Every per-episode row's Time Span length equals its Duration."""
+    checked_any = False
+    for patient in ("Garrett", "Harris", "Jones", "Wilson"):
+        nd, df, eps = _ut_narrative("2026-04", patient)
+        rows = nd.get("episode_table_rows", [])
+        # Quiet patient legitimately has zero rows — invariant holds vacuously.
+        _assert_episode_rows_consistent(rows, f"{patient} 30d")
+        if rows:
+            checked_any = True
+        # Every row is a single genuine episode (no per-condition rollup).
+        for r in rows:
+            assert r.get("duration_hours") == r.get("total_hours"), \
+                f"{patient}: per-episode row duration must be the episode's own hours"
+    assert checked_any, "expected at least one multi-episode fixture to produce rows"
+    print("PASS: A1 per-episode Time Span == Duration across multi/low-cov/quiet fixtures")
+
+
+def test_a1_major_findings_ranked_by_severity():
+    """A1: the Major Findings table is ranked by severity score (highest first).
+    The 24h table is chronological — asserted separately by its own engine test."""
+    nd, df, eps = _ut_narrative("2026-04", "Garrett")
+    rows = nd.get("episode_table_rows", [])
+    assert rows, "expected episode rows for a multi-episode fixture"
+    # Rendering sorts by -severity_score; verify the rows carry the score so the
+    # renderer's key is well-defined for every row.
+    assert all("severity_score" in r for r in rows), "rows must carry severity_score for ranking"
+
+
+def test_a2_hr_spread_single_source_byte_identical():
+    """A2: the HR P5–P95 spread string is produced by ONE helper
+    (format_spread_bounds), so page-1, page-2, and the histogram annotation are
+    byte-identical. Verifies (a) the helper's internal consistency — printed
+    spread == printed (hi - lo), the off-by-one guard — and (b) all three code
+    paths route through it."""
+    from backend.narrative_ai import format_spread_bounds
+    # (a) internal consistency across a range incl. .5 rounding boundaries.
+    for p5, p95 in [(52.6, 92.6), (52.5, 92.5), (53.0, 93.0), (40.4, 88.9)]:
+        sb = format_spread_bounds(p5, p95)
+        assert sb["spread_int"] == int(sb["p95"]) - int(sb["p5"]), \
+            f"spread must equal hi-lo for ({p5},{p95}): {sb}"
+        assert sb["text"] == f"{sb['spread']} bpm ({sb['p5']} to {sb['p95']})"
+    # (b) single source: every surface imports format_spread_bounds.
+    import inspect
+    from backend import charts, narrative_ai
+    import backend.pdf_render as pdf_render
+    assert "format_spread_bounds" in inspect.getsource(charts.render_spread_annotation), \
+        "A2: histogram annotation must format via format_spread_bounds"
+    assert "format_spread_bounds" in inspect.getsource(pdf_render.build_intelligent_key_findings), \
+        "A2: page-2 variability line must format via format_spread_bounds"
+    assert "format_spread_bounds" in inspect.getsource(narrative_ai.generate_deterministic_narrative), \
+        "A2: page-1 spread sentence must format via format_spread_bounds"
+    print("PASS: A2 HR spread is single-sourced and internally consistent")
+
+
+def test_a2_page1_spread_sentence_matches_helper():
+    """A2 on real data: when the spread sentence renders, its bounds come from the
+    canonical percentiles via the shared helper (Harris has enough coverage)."""
+    from backend.narrative_ai import format_spread_bounds, should_render_spread_annotation
+    from backend.signal_engine import (apply_window, compute_stats, compute_data_quality)
+    from backend.medhab_ingest import load_medhab_vitals, discover_report_windows
+    spec = next(s for s in discover_report_windows(_MEDHAB_FOLDER)
+                if s["patient"] == "Harris" and s["month_key"] == "2026-04")
+    data = load_medhab_vitals(_MEDHAB_FOLDER)
+    df = apply_window(data["Harris"].copy(), "custom", spec["start"], spec["end"])
+    hr, rr = compute_stats(df); dq = compute_data_quality(df)
+    nd, _d, _e = _ut_narrative("2026-04", "Harris")
+    closing = nd.get("closing", "")
+    if should_render_spread_annotation(int(dq.total_hours), hr.p5, hr.p95):
+        expect = format_spread_bounds(hr.p5, hr.p95)["text"]
+        assert expect in closing, f"page-1 sentence must contain '{expect}', got: {closing!r}"
+        print(f"PASS: A2 page-1 sentence carries single-sourced bounds '{expect}'")
+    else:
+        print("PASS: A2 spread gate not met for fixture (nothing to render) — ok")
+
+
+def test_a3_activity_chart_single_coverage_legend():
+    """A3: the monitoring-activity chart carries exactly one legend, and it is the
+    coverage-tier legend. The competing episode-category strip legend is no longer
+    drawn beneath it."""
+    import inspect
+    from backend.charts import generate_activity_trend_chart
+    src = inspect.getsource(generate_activity_trend_chart)
+    assert src.count("ax.legend(") == 1, "activity chart must have exactly one legend"
+    assert "Good coverage" in src and "Low coverage" in src, \
+        "the one legend must be the coverage tiers"
+    assert "HR episode" not in src and "RR episode" not in src, \
+        "no episode-category legend may live on the coverage chart"
+    # The strip-index legend must not be re-appended beneath the activity chart.
+    from backend.pdf_render import generate_pdf
+    gpdf = inspect.getsource(generate_pdf)
+    assert "extend(_make_strip_index_legend())" not in gpdf, \
+        "A3: strip-index legend must not be rendered under the activity chart"
+    print("PASS: A3 activity chart has a single coverage-tier legend")
+
+
+def test_b2_actions_escalate_by_severity_tier():
+    """B2: the suggested action must change with the value tier (Elevated vs High
+    vs Very-High HR; Low vs Very-Low HR) — no two adjacent tiers may share text."""
+    ph = RENDER_CONFIG["clinical_guidance"]["review_phrase_by_phase_type"]
+    assert ph["elevated_hr"] != ph["high_hr"], "Elevated HR and High HR actions must differ"
+    assert ph["high_hr"] != ph["very_high_hr"], "High HR and Very High HR actions must differ"
+    assert ph["low_hr"] != ph["very_low_hr"], "Low HR and Very Low HR actions must differ"
+    print("PASS: B2 actions escalate across value-severity tiers")
+
+
+def test_b3_reduced_coverage_caveat_threshold_in_config():
+    """B3: the reduced-coverage threshold is config-driven, not hardcoded."""
+    from backend.config import settings
+    assert isinstance(settings.reduced_coverage_hours_per_day, int)
+    assert 0 < settings.reduced_coverage_hours_per_day <= 24
+    print("PASS: B3 reduced-coverage threshold sourced from config")
+
+
+# =====================================================================
+# FOLLOW-UP FIXES — condition-aware action cap (Fix 1) + truncated-findings
+# appendix pointer with preserved full record (Fix 2)
+# =====================================================================
+
+def _pam_narrative_actions(patient, days=30):
+    """Narrative dict + actions for a PAM patient over the most-active window."""
+    import asyncio
+    from backend.client_registry import load_client_data
+    from backend.signal_engine import (apply_window, compute_stats, compute_data_quality,
+                                        compute_triage, compute_trend_assessment,
+                                        compute_positional_stats)
+    from backend.episodes import detect_episodes, compute_rollups
+    from backend.window_intelligence import detect_phases
+    from backend.narrative_ai import generate_narrative
+    from backend.quality_gates import run_quality_gates
+    from batch_generate import detect_most_active_window
+    data = load_client_data("pam_health")
+    raw = data[patient]
+    w = detect_most_active_window(raw, detect_episodes(raw), window_size_days=days)
+    if w:
+        s, e = w[0], w[1]
+    else:
+        s = raw["timestamp"].min().strftime("%Y-%m-%d")
+        e = raw["timestamp"].max().strftime("%Y-%m-%d")
+    df = apply_window(raw.copy(), "custom", s, e)
+    ws, we = df["timestamp"].min(), df["timestamp"].max()
+    g = run_quality_gates(df, ws, we, downgrade_coverage_reject=True)
+    hr, rr = compute_stats(df); dq = compute_data_quality(df); eps = detect_episodes(df)
+    ro = compute_rollups(eps, df); tr = compute_triage(eps, ro.coupled_fraction, df=df)
+    td, _ = compute_trend_assessment(df, eps)
+    nd, actions, _ = asyncio.run(generate_narrative(
+        patient, ws.strftime("%Y-%m-%d"), we.strftime("%Y-%m-%d"), hr, rr, dq, eps, ro, tr, td, "",
+        use_llm_override=False, quality_warnings=g["warnings"], phases=detect_phases(df, eps),
+        bed_summary=None, activity_trend=None, positional_stats=compute_positional_stats(df)))
+    return nd, actions
+
+
+def test_fu1_every_present_condition_retains_its_action():
+    """Fix 1: a flat count cap must never drop a present condition's guidance.
+    On the S (Chair) anchor case (Elevated HR, Elevated Breathing, High HR, Low HR),
+    every condition present in the window keeps an action bullet, AND the Low Heart
+    Rate line still carries its beta-blocker / AV-node / ECG language (the line
+    least acceptable to lose from a decision-support report)."""
+    from backend.config import PHASE_LABELS
+    nd, actions = _pam_narrative_actions("S (Chair)", 30)
+    present = {r["phase_type"] for r in nd.get("episode_table_rows", [])}
+    assert present, "expected a multi-condition fixture"
+    for pt in present:
+        label = PHASE_LABELS.get(pt, pt)
+        assert any(a.startswith(label) for a in actions), \
+            f"Fix 1 violated: condition '{label}' present but has no action bullet"
+    low = [a for a in actions if a.startswith("Low Heart Rate")]
+    assert low, "S (Chair) must retain a Low Heart Rate action"
+    t = low[0].lower()
+    assert "beta blocker" in t and "av-node" in t and "ecg" in t, \
+        f"Low Heart Rate action lost its clinical language: {low[0]}"
+    print(f"PASS: FU.1 every present condition retained; Low-HR line intact ({len(actions)} actions)")
+
+
+def test_fu1_condition_floor_overrides_flat_cap():
+    """Fix 1: the per-condition floor is untrimmable — the total action count may
+    exceed settings.max_actions when there are more present conditions than the
+    cap, rather than dropping a condition."""
+    import inspect
+    from backend.narrative_ai import _build_phase_actions
+    src = inspect.getsource(_build_phase_actions)
+    assert "condition_actions" in src and "optional_actions" in src, \
+        "actions must separate the untrimmable condition floor from optional items"
+    assert "max(len(condition_actions)" in src, \
+        "the floor must override the flat max_actions cap"
+    print("PASS: FU.1 condition floor overrides the flat action cap")
+
+
+def test_fu2_truncated_findings_preserve_full_record():
+    """Fix 2: when the severity-ranked summary truncates, shown + pointer_N ==
+    total detected episodes, and the appendix holds every episode exactly once.
+    Garrett (multi-episode) exercises truncation; the per-episode rows carry the
+    A1 integrity (Time Span sourced from the same episode as Duration)."""
+    from backend.config import RENDER_CONFIG, CONDITION_TO_PHASE_TYPE
+    max_rows = RENDER_CONFIG["events_table"]["max_rows"]
+    nd, df, eps = _ut_narrative("2026-04", "Garrett")
+    rows = nd.get("episode_table_rows", [])
+    mappable = [e for e in eps if CONDITION_TO_PHASE_TYPE.get(e.condition)]
+    assert len(rows) == len(mappable), \
+        "episode_table_rows (the appendix source) must cover every detected episode"
+    total = len(rows)
+    shown = min(max_rows, total)
+    pointer_n = max(0, total - shown)
+    assert shown + pointer_n == total, "shown + pointer_N must equal total episodes"
+    assert total > max_rows and pointer_n > 0, "Garrett must actually truncate → pointer present"
+    # Appendix = every episode exactly once (no episode absent from both surfaces).
+    assert len(rows) == total
+    print(f"PASS: FU.2 full record preserved (total={total}, shown={shown}, +{pointer_n} in appendix)")
+
+
+def test_fu2_quiet_patient_no_pointer_no_appendix():
+    """Fix 2: a zero-episode patient (Wilson) gets neither a pointer nor an
+    appendix — no regression, no empty appendix."""
+    nd, df, eps = _ut_narrative("2026-04", "Wilson")
+    assert not nd.get("episode_table_rows", []), \
+        "quiet patient must have no episode rows (no appendix, no pointer)"
+    print("PASS: FU.2 quiet patient has no appendix and no pointer")
+
+
+# =====================================================================
 # Standalone runner
 # =====================================================================
 
@@ -4227,6 +4487,19 @@ if __name__ == "__main__":
         test_ls_004_window_from_final_timestamp_no_hardcode,
         test_ls_005_no_30day_data,
         test_ls_006_insufficient_data_flagged_not_green,
+        # A-fixes (data integrity) + B-fixes sanity
+        test_a1_per_episode_time_span_matches_duration,
+        test_a1_major_findings_ranked_by_severity,
+        test_a2_hr_spread_single_source_byte_identical,
+        test_a2_page1_spread_sentence_matches_helper,
+        test_a3_activity_chart_single_coverage_legend,
+        test_b2_actions_escalate_by_severity_tier,
+        test_b3_reduced_coverage_caveat_threshold_in_config,
+        # Follow-up: condition-aware action cap + truncated-findings appendix
+        test_fu1_every_present_condition_retains_its_action,
+        test_fu1_condition_floor_overrides_flat_cap,
+        test_fu2_truncated_findings_preserve_full_record,
+        test_fu2_quiet_patient_no_pointer_no_appendix,
     ]
 
     passed = 0

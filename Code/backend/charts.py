@@ -166,7 +166,12 @@ def render_spread_annotation(
     y_text = y_max * 1.25
     ax.annotate("", xy=(p5, y_arrow), xytext=(p95, y_arrow),
                 arrowprops=dict(arrowstyle="<->", color="#DC2626", lw=1.2))
-    ax.text((p5 + p95) / 2, y_text, f"Spread: {spread:.0f} bpm", color="#DC2626",
+    # A2 + B4 — annotation carries the P5/P95 bounds, not just the magnitude,
+    # and formats them through the single format_spread_bounds helper so the
+    # chart string is byte-identical to the page-1 and page-2 sentences.
+    from .narrative_ai import format_spread_bounds
+    _sb = format_spread_bounds(p5, p95)
+    ax.text((p5 + p95) / 2, y_text, f"Spread: {_sb['text']}", color="#DC2626",
             fontsize=tick_fs + 1.5, fontweight="bold", ha="center")
     return True
 
@@ -848,15 +853,17 @@ def _generate_generic_candlestick(daily: pd.DataFrame, ep_days: set,
     from matplotlib.lines import Line2D
     
     if is_pdf and episodes:
-        # FIX 34: Severity gradient legend
+        # B6 — the trend chart no longer carries a Brief/Sustained/Severe/Critical
+        # DURATION ladder. That was a second intensity ladder competing with the
+        # value-severity badge (and "Severe" read as a vital claim on the duration
+        # axis). Duration now lives as plain text on the per-episode event rows
+        # ("sustained, 7h"). The legend states only what the chart draws: a normal
+        # day vs a day carrying an episodic event.
         hr_legend_elements = [
             Line2D([0], [0], color=settings.candlestick_color_normal, linewidth=2, label='Normal day'),
-            Line2D([0], [0], color=settings.candlestick_color_mild, linewidth=2.5, label='Brief (1-2h)'),
-            Line2D([0], [0], color=settings.candlestick_color_moderate, linewidth=3, label='Sustained (3-5h)'),
-            Line2D([0], [0], color=settings.candlestick_color_severe, linewidth=3.5, label='Severe (6h+)'),
-            Line2D([0], [0], color=settings.candlestick_color_critical, linewidth=4, label='Critical (12h+)'),
+            Line2D([0], [0], color=settings.candlestick_color_severe, linewidth=3, label='Day with episodic event'),
         ]
-        ax_hr.legend(handles=hr_legend_elements, loc='upper right', fontsize=settings.chart_legend_fontsize, frameon=True, framealpha=0.92, edgecolor='#CCCCCC', ncol=5, bbox_to_anchor=(1.0, 1.18))
+        ax_hr.legend(handles=hr_legend_elements, loc='upper right', fontsize=settings.chart_legend_fontsize, frameon=True, framealpha=0.92, edgecolor='#CCCCCC', ncol=2, bbox_to_anchor=(1.0, 1.18))
         # R21.A: Asterisk note for coupled events on the bottom subplot.
         # Pre-R21 used fig.text(0.99, 0.02) right-aligned which overlapped the
         # rightmost rotated dates (Wimberley FP Feb 01/08, SAllen CW Feb 23/24).
@@ -944,8 +951,10 @@ def generate_candlestick_for_pdf(df: pd.DataFrame, episodes: list[Episode],
 
 # ── Chart B: Distribution Histogram ─────────────────────────────────────────
 
-def _generate_generic_histogram(df: pd.DataFrame, figsize: tuple[float, float], 
-                                dpi: int, is_pdf: bool = False) -> plt.Figure:
+def _generate_generic_histogram(df: pd.DataFrame, figsize: tuple[float, float],
+                                dpi: int, is_pdf: bool = False,
+                                hr_p5: float | None = None,
+                                hr_p95: float | None = None) -> plt.Figure:
     fig, (ax_hr, ax_rr) = plt.subplots(1, 2, figsize=figsize, dpi=dpi, gridspec_kw={"wspace": 0.3})
     bg = "white" if is_pdf else CC.BG
     fig.patch.set_facecolor(bg)
@@ -955,25 +964,37 @@ def _generate_generic_histogram(df: pd.DataFrame, figsize: tuple[float, float],
     title_fs = 7 if is_pdf else 8
     tick_fs = 5 if is_pdf else 6
 
+    # B4 — every threshold / mean line carries its numeric value as a small
+    # rotated label at the top of the axis, on both distributions, so a bare
+    # dotted line is never left for the reader to decode.
+    def _label_vline(ax, x, text, color):
+        ax.text(x, 0.98, text, transform=ax.get_xaxis_transform(),
+                rotation=90, va="top", ha="right", fontsize=tick_fs,
+                color=color, fontweight="bold", clip_on=False)
+
     # HR Data
     hr_data = df["hr_avg"].dropna().values
     if len(hr_data) > 0:
         ax_hr.hist(hr_data, bins=25, color=CC.HR, alpha=0.7, edgecolor="white", linewidth=0.5)
         mean_hr = np.mean(hr_data)
         ax_hr.axvline(x=mean_hr, color=CC.HR, linestyle="--", linewidth=1.2)
-        
-        # P5/P95 Spread - R12 Fix 8: required parameters, no silent defaults
+        _label_vline(ax_hr, mean_hr, f"mean {mean_hr:.0f}", CC.HR)
+
+        # P5/P95 Spread - R12 Fix 8: required parameters, no silent defaults.
+        # A2 — the annotation reads the canonical Compute-stage percentiles when
+        # supplied (byte-identical to the page-1/page-2 sentences); it only falls
+        # back to recomputing from the plotted data when they are not passed.
         sa_cfg = RENDER_CONFIG["spread_annotation"]
-        p5, p95 = np.quantile(hr_data, 0.05), np.quantile(hr_data, 0.95)
-        spread = p95 - p5
+        p5 = float(hr_p5) if hr_p5 is not None else float(np.quantile(hr_data, 0.05))
+        p95 = float(hr_p95) if hr_p95 is not None else float(np.quantile(hr_data, 0.95))
 
         counts, _ = np.histogram(hr_data, bins=25)
         y_max = max(counts)
 
         annotated = render_spread_annotation(
             ax=ax_hr,
-            p5=float(p5),
-            p95=float(p95),
+            p5=p5,
+            p95=p95,
             sample_hours=int(len(hr_data)),
             min_spread_bpm=sa_cfg["min_spread_bpm"],
             min_sample_hours=sa_cfg["min_sample_hours"],
@@ -987,12 +1008,14 @@ def _generate_generic_histogram(df: pd.DataFrame, figsize: tuple[float, float],
 
         ax_hr.axvline(x=settings.brady_hr_avg, color=CC.WARNING, linestyle=":", linewidth=0.8)
         ax_hr.axvline(x=settings.tachy_hr_avg, color=CC.EPISODE, linestyle=":", linewidth=0.8)
+        _label_vline(ax_hr, settings.brady_hr_avg, f"low {settings.brady_hr_avg:.0f}", CC.WARNING)
+        _label_vline(ax_hr, settings.tachy_hr_avg, f"high {settings.tachy_hr_avg:.0f}", CC.EPISODE)
 
         for ax in [ax_hr, ax_rr]:
             ax.tick_params(axis='both', labelsize=settings.chart_tick_fontsize)
             ax.xaxis.label.set_size(settings.chart_axis_label_fontsize)
             ax.yaxis.label.set_size(settings.chart_axis_label_fontsize)
-        
+
     ax_hr.set_title("HR Distribution", fontsize=title_fs, fontweight="600", color=txt_color)
     ax_hr.set_xlabel("HR (bpm)", fontsize=label_fs, color=txt_color)
     ax_hr.set_ylabel("Hours", fontsize=label_fs, color=txt_color)
@@ -1007,8 +1030,11 @@ def _generate_generic_histogram(df: pd.DataFrame, figsize: tuple[float, float],
     rr_data = df["rr_avg"].dropna().values
     if len(rr_data) > 0:
         ax_rr.hist(rr_data, bins=20, color=CC.RR, alpha=0.7, edgecolor="white", linewidth=0.5)
-        ax_rr.axvline(x=np.mean(rr_data), color=CC.RR, linestyle="--", linewidth=1.2)
+        mean_rr = np.mean(rr_data)
+        ax_rr.axvline(x=mean_rr, color=CC.RR, linestyle="--", linewidth=1.2)
         ax_rr.axvline(x=settings.tachy_rr_avg, color=CC.EPISODE, linestyle=":", linewidth=0.8)
+        _label_vline(ax_rr, mean_rr, f"mean {mean_rr:.0f}", CC.RR)
+        _label_vline(ax_rr, settings.tachy_rr_avg, f"elevated {settings.tachy_rr_avg:.0f}", CC.EPISODE)
 
     ax_rr.set_title("RR Distribution", fontsize=title_fs, fontweight="600", color=txt_color)
     ax_rr.set_xlabel("RR (breaths/min)", fontsize=label_fs, color=txt_color)
@@ -1020,16 +1046,20 @@ def _generate_generic_histogram(df: pd.DataFrame, figsize: tuple[float, float],
     return fig
 
 
-def generate_histogram(df: pd.DataFrame) -> str:
-    fig = _generate_generic_histogram(df, (7.2, 1.7), settings.chart_dpi, is_pdf=False)
+def generate_histogram(df: pd.DataFrame, hr_p5: float | None = None,
+                        hr_p95: float | None = None) -> str:
+    fig = _generate_generic_histogram(df, (7.2, 1.7), settings.chart_dpi, is_pdf=False,
+                                      hr_p5=hr_p5, hr_p95=hr_p95)
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight", facecolor=fig.get_facecolor())
     plt.close(fig)
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
-def generate_histogram_for_pdf(df: pd.DataFrame) -> bytes:
-    fig = _generate_generic_histogram(df, (settings.content_width_inches, settings.histogram_height_inches), settings.chart_dpi, is_pdf=True)
+def generate_histogram_for_pdf(df: pd.DataFrame, hr_p5: float | None = None,
+                               hr_p95: float | None = None) -> bytes:
+    fig = _generate_generic_histogram(df, (settings.content_width_inches, settings.histogram_height_inches), settings.chart_dpi, is_pdf=True,
+                                      hr_p5=hr_p5, hr_p95=hr_p95)
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight")
     plt.close(fig)

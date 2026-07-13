@@ -521,11 +521,15 @@ def _build_24h_events_subtable(snap, st):
             elif k == "time_span":
                 cells.append(Paragraph(row.get('time_span', ''), evt_cell))
             elif k == "duration":
-                cells.append(Paragraph(f"{th}h", evt_cell))
+                # B6 — duration severity as plain text on the row.
+                _dd = row.get('duration_descriptor')
+                _dtxt = f"{_dd}, {th}h" if _dd else f"{th}h"
+                cells.append(Paragraph(_dtxt, evt_cell))
             elif k == "episodes":
                 cells.append(Paragraph(str(row.get('episodes', 0)), evt_cell))
             elif k == "condition":
-                cells.append(Paragraph(f"<b>{_html.escape(row.get('category', ''))}</b>", evt_cell))
+                _mk = _REDUCED_COVERAGE_MARK if row.get('reduced_coverage') else ''
+                cells.append(Paragraph(f"<b>{_html.escape(row.get('category', ''))}</b>{_mk}", evt_cell))
             elif k == "avg":
                 cells.append(Paragraph(_bare(row.get('average', '')), evt_cell))
             elif k == "min":
@@ -555,7 +559,11 @@ def _build_24h_events_subtable(snap, st):
         ('TOPPADDING', (0, 0), (-1, -1), 1),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 1),
     ]))
-    return [sub_head, pt, Spacer(1, 3)]
+    out = [sub_head, pt]
+    if any(r.get('reduced_coverage') for r in rows[: evt_cfg.get("max_rows", 6)]):
+        out.append(Paragraph(f"<i>{_REDUCED_COVERAGE_FOOTNOTE}</i>", st["legend"]))
+    out.append(Spacer(1, 3))
+    return out
 
 
 def _build_snapshot_24h_elements(report, st, page_w):
@@ -597,20 +605,25 @@ def _build_snapshot_24h_elements(report, st, page_w):
         ('TOPPADDING', (0, 0), (-1, -1), 1),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 1),
     ]))
+    # B1 — section order (requested): header + color status banner, then the
+    # plain-language one-line summary, then the Episodic Events (last 24h) table,
+    # then the Vital-Stat snapshot table beneath it. Only the order WITHIN the
+    # section changed; the block still leads the report ahead of the 31-day trend.
     elems = [Paragraph("Last 24 Hours", st["section_head"])]
     elems += render_24h_status_strip(snap, page_w, st)
-    elems.append(tbl)
-    if snap.get("coverage_pct", 100) < 75:
-        note = (f"Limited data in the final 24h "
-                f"({snap.get('hours_present', 0)}/{snap.get('expected_hours', 24)}h); "
-                f"values reflect available readings.")
-        elems.append(Paragraph(f"<i>{_html.escape(note)}</i>", st["legend"]))
     summary = snap.get("summary")
     if summary:
         elems.append(Spacer(1, 2))
         elems.append(Paragraph(_html.escape(summary), st["body"]))
     elems.append(Spacer(1, 2))
     elems += _build_24h_events_subtable(snap, st)
+    elems.append(Spacer(1, 2))
+    elems.append(tbl)
+    if snap.get("coverage_pct", 100) < 75:
+        note = (f"Limited data in the final 24h "
+                f"({snap.get('hours_present', 0)}/{snap.get('expected_hours', 24)}h); "
+                f"values reflect available readings.")
+        elems.append(Paragraph(f"<i>{_html.escape(note)}</i>", st["legend"]))
     elems.append(Spacer(1, 2))
     return elems
 
@@ -1404,7 +1417,7 @@ def build_key_findings(eps, daily_summary):
     return findings[:3]
 
 
-def build_intelligent_key_findings(eps, daily_summary, trajectory=None, window_start=None, window_end=None, counts=None, patient_id=None):
+def build_intelligent_key_findings(eps, daily_summary, trajectory=None, window_start=None, window_end=None, counts=None, patient_id=None, hr_p5=None, hr_p95=None):
     """FIX 37: Generate clinically meaningful pattern observations.
 
     Detects coupled, clustered, nocturnal, sustained, and variability patterns.
@@ -1638,19 +1651,21 @@ def build_intelligent_key_findings(eps, daily_summary, trajectory=None, window_s
             )})
 
     # Pattern 5: Variability indicator (HR)
-    # R13 Fix 5: Use unified gate shared with chart and body text
-    if daily_summary is not None and len(daily_summary) >= 5:
+    # R13 Fix 5: Use unified gate shared with chart and body text.
+    # A2 — the bounds/spread come from the canonical Compute-stage percentiles
+    # (hr_p5/hr_p95, passed in) formatted through the ONE format_spread_bounds
+    # helper, so this page-2 line is byte-identical to the page-1 sentence and
+    # the histogram annotation. The prior code recomputed a quantile here and
+    # printed it with int() truncation (52) while page 1 rounded (53) — the exact
+    # off-by-one the A2 fix removes.
+    if hr_p5 is not None and hr_p95 is not None and daily_summary is not None and len(daily_summary) >= 5:
         from .narrative_ai import should_render_spread_annotation as _gate
-        hr_p5 = daily_summary['hr_avg'].quantile(0.05)
-        hr_p95 = daily_summary['hr_avg'].quantile(0.95)
-        spread = hr_p95 - hr_p5
-        # Sample hours from df row count (df has hourly rows)
+        from .narrative_ai import format_spread_bounds as _fsb
         sample_hours = len(daily_summary) if daily_summary is not None else 0
         if _gate(int(sample_hours), float(hr_p5), float(hr_p95), metric="hr"):
-            # R12 Fix 9: Typed candidate
+            _sb = _fsb(hr_p5, hr_p95)
             candidates.append({"type": "high_variability", "text": (
-                f"<b>High variability:</b> HR spread {int(spread)} bpm "
-                f"({int(hr_p5)} to {int(hr_p95)})."
+                f"<b>High variability:</b> HR spread {_sb['text']}."
             )})
 
     # R19 B: Pattern 5b — RR variability indicator. Threshold is 10 brpm (vs 20
@@ -1727,6 +1742,152 @@ def build_intelligent_key_findings(eps, daily_summary, trajectory=None, window_s
     return [c["text"] for c in ranked[:max_obs]]
 
 
+# ── B4 / B5 — triage-driven "why flagged" sentence + priority-grade basis ────
+# Both read from the SAME triage inputs (worst detected episode + any reduced-
+# coverage overlap) so the promoted sentence, the grade, and the grade's stated
+# basis can never contradict each other or the triage tier.
+
+def _worst_episode_row(narrative):
+    rows = _v(narrative, 'episode_table_rows', []) if isinstance(narrative, dict) else []
+    rows = rows or []
+    if not rows:
+        return None
+    return sorted(rows, key=lambda r: -int(r.get('severity_score', 0) or 0))[0]
+
+
+def _has_reduced_coverage_finding(narrative):
+    rows = _v(narrative, 'episode_table_rows', []) if isinstance(narrative, dict) else []
+    return any(r.get('reduced_coverage') for r in (rows or []))
+
+
+# B3 — the caveat is printed once, as a table footnote, keyed to the row marker.
+_REDUCED_COVERAGE_MARK = "‡"  # double dagger
+_REDUCED_COVERAGE_FOOTNOTE = (
+    "‡ Occurred during a period of reduced monitoring coverage; interpret with caution."
+)
+
+
+def _finding_phrase(row):
+    if not row:
+        return ""
+    cat = row.get('category', 'finding')
+    dd = row.get('duration_descriptor', '')
+    hrs = row.get('total_hours', 0)
+    is_low = 'low' in (row.get('phase_type') or '')
+    trig_label = 'min' if is_low else 'peak'
+    trig_val = ((row.get('min') if is_low else row.get('max')) or '').replace(' bpm', '').replace(' brpm', '').strip()
+    txt = f"{cat} ({dd}, {hrs}h"
+    if trig_val and trig_val != '—':
+        txt += f", {trig_label} {trig_val}"
+    return txt + ")"
+
+
+def _why_flagged_sentence(report, narrative):
+    """B5 — one promoted sentence naming the worst finding and why triage fired.
+    Assembled from the already-computed triage inputs; empty for a GREEN report."""
+    triage = str(_v(report, 'triage', '') or '').upper()
+    if triage not in ('RED', 'YELLOW'):
+        return ""
+    row = _worst_episode_row(narrative)
+    if not row:
+        return ""
+    cov = (", reduced coverage" if _has_reduced_coverage_finding(narrative) else "")
+    verb = "Provider review recommended." if triage == 'RED' else "Closer observation suggested."
+    return f"Flagged {triage} — {_finding_phrase(row)}{cov}. {verb}"
+
+
+def _priority_grade_basis(report, narrative):
+    """B4 — the one-line basis for the priority grade, driven by the same triage
+    rule that assigns it (so basis and grade cannot diverge)."""
+    triage = str(_v(report, 'triage', '') or '').upper()
+    if triage == 'RED':
+        base = "≥1 sustained/severe value event"
+    elif triage == 'YELLOW':
+        base = "elevated-severity finding for closer observation"
+    else:
+        base = "no sustained threshold-exceeding findings"
+    if triage in ('RED', 'YELLOW') and _has_reduced_coverage_finding(narrative):
+        base += " + reduced-coverage days"
+    return base
+
+
+def _build_episode_appendix(rows, st):
+    """Follow-up Fix 2 — full per-episode record appendix. Renders EVERY detected
+    episode (chronological), one row each, with the same A1 integrity as the
+    summary table (Time Span and Duration from the same episode). Rendered on its
+    own page only when the Major Findings summary was truncated, so no episode is
+    ever dropped without a reachable trace."""
+    if not rows:
+        return []
+    from reportlab.lib.styles import ParagraphStyle as _PS
+    evt_cfg = RENDER_CONFIG["events_table"]
+    table_columns = evt_cfg.get("columns", [])
+    evt_cell = _PS("appx_cell", parent=st["table_cell"], fontSize=6.5, leading=7.5)
+    evt_hdr = _PS("appx_hdr", parent=st["table_header"], fontSize=6.5, leading=7.5)
+
+    def _bare(s):
+        return _html.escape(str(s).replace(" bpm", "").replace(" brpm", "").strip())
+
+    header_row = [Paragraph(f'<b>{col["label"]}</b>', evt_hdr) for col in table_columns]
+    pt_data = [header_row]
+    for row in rows:
+        th = row.get('total_hours', row.get('duration_hours', 0))
+        ptype = row.get('phase_type', '') or ''
+        is_low = 'low' in ptype
+        cells = []
+        for col in table_columns:
+            k = col["key"]
+            if k == "date":
+                cells.append(Paragraph(row.get('date', ''), evt_cell))
+            elif k == "time_span":
+                cells.append(Paragraph(row.get('time_span', ''), evt_cell))
+            elif k == "duration":
+                _dd = row.get('duration_descriptor')
+                cells.append(Paragraph(f"{_dd}, {th}h" if _dd else f"{th}h", evt_cell))
+            elif k == "condition":
+                _mk = _REDUCED_COVERAGE_MARK if row.get('reduced_coverage') else ''
+                cells.append(Paragraph(f"<b>{_html.escape(row.get('category', ''))}</b>{_mk}", evt_cell))
+            elif k == "avg":
+                cells.append(Paragraph(_bare(row.get('average', '')), evt_cell))
+            elif k == "min":
+                v = _bare(row.get('min', '—'))
+                cells.append(Paragraph(f"<b>{v}</b>" if is_low else v, evt_cell))
+            elif k == "max":
+                v = _bare(row.get('max', '—'))
+                cells.append(Paragraph(v if is_low else f"<b>{v}</b>", evt_cell))
+            elif k == "comment":
+                cells.append(Paragraph(_html.escape(row.get('comment', '')), evt_cell))
+            else:
+                cells.append(Paragraph("", evt_cell))
+        pt_data.append(cells)
+
+    base_width = 7.5 * inch
+    widths = [col["width"] * base_width for col in table_columns]
+    pt = Table(pt_data, colWidths=widths, repeatRows=1)
+    pt.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), _HEADER_BG),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('GRID', (0, 0), (-1, -1), 0.5, _BORDER),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, _hex("#F9FAFB")]),
+        ('LEFTPADDING', (0, 0), (-1, -1), 4),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+        ('TOPPADDING', (0, 0), (-1, -1), 1),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 1),
+    ]))
+    out = [
+        Paragraph("Appendix — Full Episode Record", st["section_head"]),
+        Paragraph(
+            f"<i>All {len(rows)} detected episodes, chronological. Time Span and "
+            f"Duration are sourced from the same episode.</i>", st["legend"]),
+        Spacer(1, 3),
+        pt,
+    ]
+    if any(r.get('reduced_coverage') for r in rows):
+        out.append(Paragraph(f"<i>{_REDUCED_COVERAGE_FOOTNOTE}</i>", st["legend"]))
+    return out
+
+
 def generate_pdf(report: ReportResponse, df=None, episodes=None,
                  one_page_only: bool = False) -> bytes:
     """Build the patient PDF report.
@@ -1801,6 +1962,19 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
     # definition note rides at the bottom.
     elements.extend(_build_threshold_legend(st, include_note=False))
     elements.append(Spacer(1, 4))
+
+    # B5 — promote a single "why this was flagged" sentence to sit directly under
+    # the banner (top of the body), naming the worst finding and why triage
+    # fired. Reads from the already-computed triage inputs; empty for GREEN.
+    _why = _why_flagged_sentence(report, narrative_pre)
+    if _why:
+        _triage_up = str(_v(report, 'triage', '') or '').upper()
+        _why_color = '#B91C1C' if _triage_up == 'RED' else '#B45309'
+        _why_style = ParagraphStyle('why_flagged', parent=st['body'],
+                                    fontSize=8.5, leading=10,
+                                    textColor=_hex(_why_color))
+        elements.append(Paragraph(f"<b>{_html.escape(_why)}</b>", _why_style))
+        elements.append(Spacer(1, 4))
 
     # Last 24 Hours triage layer leads the body — the nurse's daily-decision
     # block (24h status strip + snapshot + summary + episodic events) comes
@@ -1924,9 +2098,14 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
         for item in settings.phase_strip_index_line2:
             parts.append(f'<b>{_html.escape(item["symbol"])}</b> <i>{_html.escape(item["label"])}</i>')
 
-        # R15 C2: Strip index legend MOVED — built but not appended here.
-        # Now rendered after the trends chart by _make_strip_index_legend below.
-        _ = parts
+        # A3 — the phase-strip index legend (HR / RR / Recorded-no-episode /
+        # No-data) belongs with the phase strip it explains, so it is rendered
+        # HERE, directly under the strip. It used to be drawn at the bottom of
+        # page 2, immediately beneath the monitoring-activity chart, where it read
+        # as a second, contradictory legend for a chart that is coloured by
+        # coverage tier. The activity chart now carries exactly one legend.
+        elements.append(Paragraph(" &nbsp; ".join(parts), _idx_style))
+        elements.append(Spacer(1, 3))
 
     # R22.D — per-patient summary block. Replaces the four-paragraph
     # Section 1 ("Episodic Burden", "Trend", "Clinical Guidance", "Trajectory")
@@ -1935,6 +2114,12 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
     # long time to read"; the table is the same information in a faster-to-
     # scan layout.
     narrative = _v(report, "narrative") or "No narrative available."
+
+    # Follow-up Fix 2 — when the severity-ranked Major Findings table is
+    # truncated, the FULL per-episode record is preserved in an appendix table
+    # (rendered at the end, chronological). Captured here so it survives to the
+    # end of generate_pdf; stays None when nothing was truncated.
+    _appendix_rows = None
 
     if isinstance(narrative, dict):
         from .batch_summary import build_findings_text, format_episodes_per_day
@@ -1997,7 +2182,12 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
         if _overview or _grade:
             _line = _html.escape(_overview)
             if _grade:
-                _line = (_line + "  " if _line else "") + f"<b>Priority grade: {_grade}</b>"
+                # B4 — the grade carries a one-line basis, driven by the same
+                # triage rule that assigns it, so the stated basis and the
+                # computed grade cannot diverge.
+                _basis = _priority_grade_basis(report, narrative)
+                _line = (_line + "  " if _line else "") + (
+                    f"<b>Priority grade: {_grade}</b> — {_grade} = {_html.escape(_basis)}")
             elements.append(Paragraph(_line, st["body"]))
             elements.append(Spacer(1, 4))
 
@@ -2056,70 +2246,33 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
             st["body"],
         ))
 
-        phase_table_rows = _v(narrative, 'phase_table_rows', [])
-        # Default for the no-events-table case: 0 rows means the page-1 legends
-        # below (line ~1977) place normally (<=3 branch). Without this default,
-        # a report with episodes but no displayable phase rows raised
-        # UnboundLocalError on num_events_table_rows.
+        # A1 — the Major Findings table renders ONE ROW PER DETECTED EPISODE
+        # (episode_table_rows), not the per-condition phase rollup. Every row's
+        # Time Span and Duration are sourced from the same episode object, so
+        # they always agree. Ranked by severity score (highest first), ties
+        # broken chronologically. There is no longer a separate "(brief)"
+        # aggregate class: every brief episode is simply its own row.
+        episode_rows = _v(narrative, 'episode_table_rows', []) or []
         num_events_table_rows = 0
-        if phase_table_rows:
+        if episode_rows:
             elements.append(Spacer(1, 6))
-            # Round 10 Fix 3: Two clear duration columns
-            # Round 11 Fix 2a: Cap rows at max_rows with overflow indicator
             evt_cfg = RENDER_CONFIG["events_table"]
             max_rows = evt_cfg.get("max_rows", 8)
-            priority_order = evt_cfg.get("priority_order", [])
 
-            # Sort by clinical importance: severity TIER first (Very High/Low >
-            # High > Elevated/Low), channel-agnostic, then chronological by start
-            # date within a tier. Logical and not scrambled.
             def _row_sort_key(row):
-                phase_type = row.get('phase_type') or row.get('brief_phase_type')
-                if not phase_type:
-                    for pt_key, pt_label in PHASE_LABELS.items():
-                        if pt_label == row.get('category', ''):
-                            phase_type = pt_key
-                            break
-                sev = _SEVERITY_TIER_RANK.get(phase_type, 9)
-                date_str = row.get('date', '')  # single first-episode date
+                date_str = row.get('date', '')  # this episode's start date
                 try:
                     first_date = date_str.split(' to ')[0].strip() if date_str else ''
                     sort_date = pd.Timestamp(f"{first_date} 2000") if first_date else pd.Timestamp('2099-01-01')
                 except Exception:
                     sort_date = pd.Timestamp('2099-01-01')
-                return (sev, sort_date)
+                # Higher severity first; earlier start date breaks ties.
+                return (-int(row.get('severity_score', 0) or 0), sort_date)
 
-            sorted_rows = sorted(phase_table_rows, key=_row_sort_key)
-            # R18 N2: brief rows (R18 C3 aggregations) bypass the max_rows cap.
-            # Capped at MAX_BRIEF_VISIBLE=1 — the single visible brief row is
-            # the highest-priority condition by events_table priority_order so
-            # the most clinically alarming brief signal surfaces. Remaining
-            # briefs fall to overflow footnote.
-            #
-            # Fallback 90DayPeriod reports (under-90-day patients whose 90DP is
-            # content-equivalent to their FullPeriod) suppress brief rows
-            # entirely — those rows render in their FullPeriod report already,
-            # and the fallback header note consumes the remaining page-1
-            # vertical capacity. Without this suppression, PHolst 90DP and
-            # RSanchez 90DP spill to page 3.
-            TOTAL_VISIBLE_CAP = 7
-            MAX_BRIEF_VISIBLE = 1
-            real_rows = [r for r in sorted_rows if "(brief)" not in r.get('category', '')]
-            brief_rows = [r for r in sorted_rows if "(brief)" in r.get('category', '')]
-            if _v(report, "is_fallback_90d"):
-                brief_rows = []
-            else:
-                def _brief_priority(r):
-                    pt = r.get('brief_phase_type')
-                    return priority_order.index(pt) if pt and pt in priority_order else 999
-                brief_rows = sorted(brief_rows, key=_brief_priority)
-            real_visible = real_rows[:max_rows]
-            brief_capacity = min(MAX_BRIEF_VISIBLE,
-                                 max(0, TOTAL_VISIBLE_CAP - len(real_visible)))
-            brief_visible = brief_rows[:brief_capacity]
-            display_rows = real_visible + brief_visible
-            overflow_rows = real_rows[max_rows:] + brief_rows[brief_capacity:]
-            
+            sorted_rows = sorted(episode_rows, key=_row_sort_key)
+            display_rows = sorted_rows[:max_rows]
+            overflow_rows = sorted_rows[max_rows:]
+
             num_events_table_rows = len(display_rows)
 
             table_columns = evt_cfg.get("columns", [])
@@ -2158,11 +2311,18 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
                     elif k == "time_span":
                         row_cells.append(Paragraph(row.get('time_span', ''), evt_cell))
                     elif k == "duration":
-                        row_cells.append(Paragraph(f"{th}h", evt_cell))
+                        # B6 — duration severity as plain text ("sustained, 7h" /
+                        # "brief, 4h"), kept off the value-severity colour axis.
+                        _dd = row.get('duration_descriptor')
+                        _dtxt = f"{_dd}, {th}h" if _dd else f"{th}h"
+                        row_cells.append(Paragraph(_dtxt, evt_cell))
                     elif k == "episodes":
                         row_cells.append(Paragraph(str(row.get('episodes', 0)), evt_cell))
                     elif k == "condition":
-                        row_cells.append(Paragraph(f"<b>{_html.escape(row.get('category', ''))}</b>", evt_cell))
+                        # B3 — a compact double-dagger marks a reduced-coverage
+                        # episode; the full caveat prints once as a footnote below.
+                        _mk = _REDUCED_COVERAGE_MARK if row.get('reduced_coverage') else ''
+                        row_cells.append(Paragraph(f"<b>{_html.escape(row.get('category', ''))}</b>{_mk}", evt_cell))
                     elif k == "avg":
                         row_cells.append(Paragraph(_bare(row.get('average', '')), evt_cell))
                     elif k == "min":
@@ -2193,12 +2353,20 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
                 ('BOTTOMPADDING', (0, 0), (-1, -1), 1),
             ]))
             elements.append(pt)
-            # R11 Fix 2a: Overflow line
+            # B3 — single reduced-coverage caveat footnote, shown only when a
+            # visible row is marked.
+            if any(r.get('reduced_coverage') for r in display_rows):
+                elements.append(Paragraph(f"<i>{_REDUCED_COVERAGE_FOOTNOTE}</i>", st["legend"]))
+            # Follow-up Fix 2 — pointer to the appendix (never a silent drop):
+            # "plus N more (see appendix)". The full episode list is preserved in
+            # the appendix table rendered at the end of the report.
             if overflow_rows:
-                overflow_conditions = sorted(set(r.get('category', '') for r in overflow_rows))
-                overflow_text = evt_cfg.get("overflow_template", "+ {n} additional conditions").format(
-                    n=len(overflow_rows), conditions=", ".join(overflow_conditions))
-                elements.append(Paragraph(f"<i>{_html.escape(overflow_text)}</i>", st["body"]))
+                elements.append(Paragraph(
+                    f"<i>plus {len(overflow_rows)} more (see appendix)</i>", st["body"]))
+                # Full per-episode record, chronological, same A1 integrity.
+                _appendix_rows = sorted(
+                    episode_rows,
+                    key=lambda r: str(r.get('start_time', '')))
             # R22.B: physiologic-clipping footnote removed. RR is no longer
             # clipped (Sprint A noise filter handles bad data); HR clipping
             # only fires for extreme sensor garbage that does not occur in the
@@ -2246,11 +2414,14 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
             episode_counts = _reconcile_counts(ep_objects, display_phases)
         except Exception:
             episode_counts = None
+        _hr_summ_pf = _v(report, 'hr_summaries', None)
         findings_data = build_intelligent_key_findings(
             all_eps, df, trajectory=trajectory_data,
             window_start=window_start, window_end=window_end,
             counts=episode_counts,
-            patient_id=_v(report, 'patient_id')
+            patient_id=_v(report, 'patient_id'),
+            # A2 — canonical HR percentiles for the variability observation.
+            hr_p5=_v(_hr_summ_pf, 'p5', None), hr_p95=_v(_hr_summ_pf, 'p95', None),
         )
 
         try:
@@ -2306,34 +2477,10 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
                 elems.append(Paragraph("<i>Red bars indicate days with detected episodic events.</i>", st["legend"]))
         return elems
 
-    def _make_strip_index_legend():
-        """R15 C2: Phase strip index legend, rendered after the trends chart on page 1.
-        Returns a list of ReportLab elements (empty if disabled or no display_phases)."""
-        elems = []
-        if not (settings.phase_strip_index_enabled and display_phases):
-            return elems
-        _idx_fs = settings.phase_strip_index_font_size
-        _idx_tc = settings.phase_strip_index_text_color
-        _color_map = {
-            "hr": settings.phase_strip_color_by_condition_type.get("hr", "#DC2626"),
-            "rr": settings.phase_strip_color_by_condition_type.get("rr", "#3B82F6"),
-            "no_episode": settings.phase_strip_no_episode_color,
-            "no_data": settings.phase_strip_no_data_color,
-        }
-        _idx_style = ParagraphStyle('strip_idx', parent=st['legend'],
-                                     fontSize=_idx_fs, leading=_idx_fs + 2,
-                                     textColor=_hex(_idx_tc))
-        parts = []
-        for item in settings.phase_strip_index_line1:
-            sc = _color_map.get(item["swatch_color"], "#CCCCCC")
-            has_border = item.get("border", False)
-            marker = f'<font color="#999999">□</font>' if has_border else f'<font color="{sc}">■</font>'
-            parts.append(f'{marker} <i>{_html.escape(item["label"])}</i>')
-        for item in settings.phase_strip_index_line2:
-            parts.append(f'<b>{_html.escape(item["symbol"])}</b> <i>{_html.escape(item["label"])}</i>')
-        elems.append(Paragraph(" &nbsp; ".join(parts), _idx_style))
-        elems.append(Spacer(1, 2))
-        return elems
+    # A3 — the former nested _make_strip_index_legend() helper was removed. The
+    # phase-strip index legend is now rendered inline directly beneath the phase
+    # strip on page 1 (see the "A3" block above), so it never re-appears as a
+    # second legend under the monitoring-activity chart on page 2.
 
     # The Clinical Alerting Thresholds legend is rendered once at the TOP of the
     # report (above the phase strip) via the module-level _build_threshold_legend.
@@ -2348,7 +2495,8 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
             elements.append(Spacer(1, 2))
             elements.extend(_make_findings_elements())
             elements.extend(_make_candlestick_elements())
-            elements.extend(_make_strip_index_legend())
+            # A3 — strip-index legend now rides with the phase strip above; not
+            # repeated here.
             elements.append(_threshold_definition_note(st))
     elif is_long_full_period:
         # 3-page layout: hint that visual trends continue on next page
@@ -2397,7 +2545,11 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
         # FIX 2: SECTION 4 — Histogram SECOND (distribution context)
         elements.append(Paragraph(
             "Vital Sign Distribution", st["section_head"]))
-        hist = generate_histogram_for_pdf(df)
+        # A2 — pass the canonical Compute-stage HR percentiles so the histogram
+        # spread annotation matches the page-1 and page-2 sentences exactly.
+        _hr_summ = _v(report, 'hr_summaries', None)
+        hist = generate_histogram_for_pdf(
+            df, hr_p5=_v(_hr_summ, 'p5', None), hr_p95=_v(_hr_summ, 'p95', None))
         hist_h = settings.histogram_height_inches * inch
         elements.append(Image(io.BytesIO(hist), width=settings.histogram_width_inches * inch, height=settings.histogram_height_inches * inch))
         elements.append(Spacer(1, 3))
@@ -2415,11 +2567,19 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
             st["caption"]
         ))
         
-        # Strip-index legend (the "#N" cross-reference) stays at the bottom; the
-        # thresholds color key now lives at the top of the report (above the
-        # strip). The episode-definition note rides here at the bottom.
-        elements.extend(_make_strip_index_legend())
+        # A3 — the phase-strip index legend was moved up to sit under the phase
+        # strip on page 1; it is NOT drawn here, so the monitoring-activity chart
+        # above carries exactly one legend (its coverage tiers). The episode-
+        # definition note (not a colour legend) rides at the bottom.
         elements.append(_threshold_definition_note(st))
+
+    # Follow-up Fix 2 — appendix with the full episode record, on its own page,
+    # only when the Major Findings summary was truncated. Preserves every episode
+    # so a severity-ranked top-N summary never means dropped clinical record.
+    if _appendix_rows:
+        elements.append(PageBreak())
+        elements.extend(_build_compact_header(report, st, page_w, total_pages + 1, total_pages=total_pages + 1))
+        elements.extend(_build_episode_appendix(_appendix_rows, st))
 
     elements.extend(_build_footer(report, st))
     doc.build(elements)
@@ -2430,7 +2590,13 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
     try:
         from PyPDF2 import PdfReader as _PdfReader
         page_count = len(_PdfReader(io.BytesIO(pdf_bytes)).pages)
-        if page_count > 2:
+        # The BODY is a hard 2 pages. A full-record appendix (Fix 2) legitimately
+        # extends the report by a data-driven number of pages (a high-volume
+        # patient's full episode list can span several), so length is only an
+        # error for a NON-truncated report (no appendix). The body layout is
+        # identical either way — the summary table is capped at max_rows whether
+        # or not it truncated — so a clean non-appendix report proves body fit.
+        if _appendix_rows is None and page_count > 2:
             import logging
             logging.getLogger(__name__).warning(
                 f"Page overflow: {_v(report, 'patient_id')} rendered as {page_count} pages "
