@@ -120,16 +120,14 @@ def detect_phases(df: pd.DataFrame, episodes: list) -> list[dict]:
         except Exception:
             continue
 
-    # Map condition names to phase types
+    # Map condition names to phase types (six conditions, redesign July 14).
     COND_TO_PHASE = {
-        "Severe Bradycardia": "very_low_hr",
         "Bradycardia": "low_hr",
-        "Very High HR": "very_high_hr",
         "Tachycardia": "high_hr",
-        "Elevated HR": "elevated_hr",
+        "Very High HR": "very_high_hr",
+        "Low RR": "low_rr",
         "Tachypnea": "elevated_rr",
-        "High RR": "high_rr",                # R15 A2
-        "Very High RR": "very_high_rr",      # R15 A2
+        "High RR": "high_rr",
     }
 
     # Build per-condition-track day flags

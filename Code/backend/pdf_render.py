@@ -60,25 +60,30 @@ def _v(o, k, d=None):
                     return d
 
 def _format_status_heading(report, days_count: int) -> str:
-    """R22.D — render the per-patient summary header line including dates.
-
-    Tolerates the legacy single-arg template (only `{days}`) so older
-    overrides keep working — surfaces blank dates for back-compat callers
-    that don't pass a window.
-    """
+    """Two-tone period heading (client markup, July 16), computed from the
+    patient's own window: a dark "Last N days" phrase followed by a blue-accent
+    "Episodic events from {start} to {end}, {year}" phrase. The day count and
+    dates are never hardcoded; the year comes from the window end."""
     import pandas as pd
-    template = settings.status_timeline_heading
     ws_v = _v(report, "window_start", "")
     we_v = _v(report, "window_end", "")
     try:
         start_str = pd.Timestamp(ws_v).strftime("%b %d") if ws_v else ""
-        end_str = pd.Timestamp(we_v).strftime("%b %d") if we_v else ""
+        we_ts = pd.Timestamp(we_v) if we_v else None
+        end_str = we_ts.strftime("%b %d") if we_ts is not None else ""
+        year_str = we_ts.strftime("%Y") if we_ts is not None else ""
     except Exception:
-        start_str, end_str = str(ws_v), str(we_v)
-    try:
-        return template.format(days=days_count, start=start_str, end=end_str)
-    except KeyError:
-        return template.format(days=days_count)
+        start_str, end_str, year_str = str(ws_v), str(we_v), ""
+    dark = f"#{_DARK_TEXT.hexval()[2:]}"
+    blue = f"#{_BRAND_BLUE.hexval()[2:]}"
+    if start_str and end_str:
+        date_part = f"from {start_str} to {end_str}"
+        date_part += f", {year_str}" if year_str else ""
+    else:
+        date_part = ""
+    trailing = f"Episodic events {date_part}".strip()
+    return (f'<font color="{dark}">Last {days_count} days</font> '
+            f'<font color="{blue}">{trailing}</font>')
 
 
 def _render_status_heading_with_index(report, days_count: int, page_w, st):
@@ -99,6 +104,10 @@ def _render_status_heading_with_index(report, days_count: int, page_w, st):
     heading = _format_status_heading(report, days_count)
     hr_color = _PC.get(_swatch_family.get("hr", "low_hr"), "#DC2626")
     rr_color = _PC.get(_swatch_family.get("rr", "elevated_rr"), "#3B82F6")
+    # Primary section heading — sized in line with the "Last 24 Hours" heading
+    # (client markup: "Make this Font bigger"). Two-tone via inline <font> markup.
+    head_style = ParagraphStyle("_status_heading", parent=st["title"], fontSize=13.5,
+                                leading=16)
     # ReportLab Paragraph supports inline <font color="..."> markup. Right-
     # align the swatch cell so the index sits against the chart frame.
     index_html = (
@@ -110,8 +119,8 @@ def _render_status_heading_with_index(report, days_count: int, page_w, st):
         "_status_heading_index", parent=st["section_head"], alignment=2,
     )
     tbl = Table(
-        [[Paragraph(heading, st["section_head"]), Paragraph(index_html, right_style)]],
-        colWidths=[page_w * 0.72, page_w * 0.28],
+        [[Paragraph(heading, head_style), Paragraph(index_html, right_style)]],
+        colWidths=[page_w * 0.80, page_w * 0.20],
     )
     tbl.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
@@ -397,15 +406,16 @@ def _build_header(report, st, page_w):
 
 
 def _build_compact_header(report, st, page_w, page_num, total_pages=2):
-    t = _v(report, "triage")
-    badge_label = _TRIAGE_BADGE_TEXT.get(t, str(t).upper())
-    triage_bg, triage_text = _TRIAGE_COLORS.get(t, (_GREEN_BG, _GREEN_TEXT))
+    # Neutral review label (no triage-tier word, no "Provider Review") to match
+    # the page-1 badge and stay within the measurement-only language rule.
+    t = str(_v(report, "triage") or "").upper()
+    badge_label = "Review recommended" if t in ("RED", "YELLOW") else "Routine monitoring"
     period_str = _format_period(_v(report, "window_start"), _v(report, "window_end"))
-    
+
     header_text = (
         f"<b>Patient ID:</b> {_html.escape(_v(report, 'patient_id'))}  |  "
         f"<b>Period:</b> {_html.escape(period_str)}  |  "
-        f"<b><font color='#{triage_text.hexval()[2:]}'>{_html.escape(badge_label)}</font></b>  |  "
+        f"<b>{badge_label}</b>  |  "
         f"Page {page_num} of {total_pages}"
     )
     p = Paragraph(header_text, st["meta_line"])
@@ -496,7 +506,7 @@ def _build_24h_events_subtable(snap, st):
     evt_cell = _PS("evt_cell24", parent=st["table_cell"], fontSize=6.5, leading=7.5)
     evt_hdr = _PS("evt_hdr24", parent=st["table_header"], fontSize=6.5, leading=7.5)
 
-    sub_head = Paragraph("Episodic Events (last 24h)", st["section_head"])
+    sub_head = Paragraph("Episodic Events", st["section_head"])
 
     if not rows:
         # Quiet window — say so plainly, never fabricate a row.
@@ -606,7 +616,7 @@ def _build_snapshot_24h_elements(report, st, page_w):
         ('BOTTOMPADDING', (0, 0), (-1, -1), 1),
     ]))
     # B1 — section order (requested): header + color status banner, then the
-    # plain-language one-line summary, then the Episodic Events (last 24h) table,
+    # plain-language one-line summary, then the Episodic Events table,
     # then the Vital-Stat snapshot table beneath it. Only the order WITHIN the
     # section changed; the block still leads the report ahead of the 31-day trend.
     elems = [Paragraph("Last 24 Hours", st["section_head"])]
@@ -650,7 +660,7 @@ def _build_episode_day_map(episodes):
     # R15 A2 additions (High RR > 30, Very High RR > 40) fell through to the
     # HR branch with default hr_type="low_hr" — Wimberley's strip mislabeled
     # 77 of his 97 RR episodes as Low HR (Sajol May 4 review item 3c).
-    rr_conditions = {"Tachypnea", "High RR", "Very High RR"}
+    rr_conditions = {"Low RR", "Tachypnea", "High RR"}
 
     for ep in episodes:
         try:
@@ -666,16 +676,13 @@ def _build_episode_day_map(episodes):
         # Map condition to phase type for HR episodes
         from .config import Conditions
         hr_type_map = {
-            Conditions.SEVERE_BRADY: "very_low_hr",
             Conditions.BRADYCARDIAC: "low_hr",
-            Conditions.ELEVATED_HR: "elevated_hr",
             Conditions.TACHYCARDIA: "high_hr",
             Conditions.VERY_HIGH_HR: "very_high_hr",
         }
-        # Severity ranking: higher = more clinically urgent
+        # Severity ranking: higher = more clinically notable
         HR_SEVERITY_RANK = {
-            "very_low_hr": 1, "low_hr": 2, "elevated_hr": 3,
-            "high_hr": 4, "very_high_hr": 5,
+            "low_hr": 2, "high_hr": 4, "very_high_hr": 5,
         }
         hr_type = hr_type_map.get(condition, "low_hr")
 
@@ -1109,10 +1116,10 @@ def render_status_timeline_bar(window_start, window_end, display_phases, content
 # Severity-tier rank for the events-table sort: most clinically important first
 # (channel-agnostic), then chronological within a tier. Lower = more severe.
 _SEVERITY_TIER_RANK = {
-    "very_high_hr": 0, "very_low_hr": 0, "very_high_rr": 0,
+    "very_high_hr": 0,
     "high_hr": 1, "high_rr": 1,
     "low_hr": 2,
-    "elevated_hr": 3, "elevated_rr": 3,
+    "elevated_rr": 3, "low_rr": 3,
 }
 
 
@@ -1145,36 +1152,35 @@ def strip_block_colors(ptype):
 
 
 def _build_threshold_legend(st, include_note=True):
-    """Clinical Alerting Thresholds color key (Round 28: rendered at the TOP of
-    the report, above the phase strip, so the color key precedes the strip it
-    explains). Module-level so it can be placed before the strip is built.
+    """Clinical measurement thresholds color key (redesign, July 14). Six levels:
+    heart rate (red family) low/high/very high, breathing (blue family)
+    low/elevated/high. Measurement framing only — these are the stated ranges the
+    measured windows are compared against, not alerts.
 
     ``include_note=False`` renders just the title + color swatches (the compact
-    reference band used at the top); the episode-definition note is rendered
-    separately at the bottom so the top band stays small and the strip sits high.
+    reference band); the window-definition note renders separately.
     """
     elems = []
     # Compact title (smaller than a section head — this is a reference band).
     title_style = ParagraphStyle('thresh_title', parent=st['body_bold'], fontSize=8, leading=9, spaceAfter=1)
-    elems.append(Paragraph("Clinical Alerting Thresholds", title_style))
+    elems.append(Paragraph("Measurement thresholds", title_style))
+    elems.append(Spacer(1, 4))   # breathing room between the heading and the swatches
 
-    # Each threshold uses its own distinct shade from THRESHOLD_LEGEND_COLORS.
+    # Each level uses its own distinct shade from THRESHOLD_LEGEND_COLORS.
     from .config import THRESHOLD_LEGEND_COLORS as _TLC
     threshold_rows_data = [
-        ('Very Low HR', f'< {int(settings.severe_brady_min)} bpm', _TLC["very_low_hr"]),
-        ('Low HR', f'< {int(settings.brady_hr_avg)} bpm', _TLC["low_hr"]),
-        ('Elevated HR', f'> {int(settings.elevated_hr_avg)} bpm', _TLC["elevated_hr"]),
-        ('High HR', f'> {int(settings.tachy_hr_avg)} bpm', _TLC["high_hr"]),
-        ('Very High HR', f'> {int(settings.very_high_hr_avg)} bpm', _TLC["very_high_hr"]),
+        ('Low Heart Rate', f'< {int(settings.brady_hr_avg)} bpm', _TLC["low_hr"]),
+        ('High Heart Rate', f'> {int(settings.tachy_hr_avg)} bpm', _TLC["high_hr"]),
+        ('Very High Heart Rate', f'> {int(settings.very_high_hr_avg)} bpm', _TLC["very_high_hr"]),
+        ('Low Breathing', f'< {int(settings.low_rr_avg)} brpm', _TLC["low_rr"]),
         ('Elevated Breathing', f'> {int(settings.tachy_rr_avg)} brpm', _TLC["elevated_rr"]),
         ('High Breathing', f'> {int(settings.high_rr_avg)} brpm', _TLC["high_rr"]),
-        ('Very High Breathing', f'> {int(settings.very_high_rr_avg)} brpm', _TLC["very_high_rr"]),
     ]
 
-    # Laid out as 4 columns × 2 rows (8 cells) so it stays a compact reference
-    # band, not a focal section.
+    # Laid out as 3 columns × 2 rows: heart rate (red) on the top row, breathing
+    # (blue) on the bottom row, so each family reads together.
     swatch_style = ParagraphStyle('swatch_lbl', parent=st['legend'], fontSize=5.5, leading=6.5)
-    cells_per_row = 4
+    cells_per_row = 3
     arranged_rows = []
     for i in range(0, len(threshold_rows_data), cells_per_row):
         row_cells = []
@@ -1196,7 +1202,7 @@ def _build_threshold_legend(st, include_note=True):
             ]
         arranged_rows.append(row_cells)
 
-    col_widths = [0.18 * inch, 1.62 * inch] * cells_per_row
+    col_widths = [0.18 * inch, 2.32 * inch] * cells_per_row
     thresh_tbl = Table(arranged_rows, colWidths=col_widths)
     thresh_tbl.setStyle(TableStyle([
         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
@@ -1217,11 +1223,11 @@ def _threshold_definition_note(st):
     bottom of the report (near the strip-index legend), kept out of the compact
     top color-key band."""
     return Paragraph(
-        f"<i>Episodic event: threshold exceeded continuously for &ge;&nbsp;"
-        f"{int(settings.episodic_event_min_hours)}&nbsp;hour. "
-        f"Episodes separated by &le;&nbsp;{int(settings.episode_merge_gap_hours)}&nbsp;hour "
-        f"of normal vitals are counted as the same event. "
-        f"Brief threshold crossings that do not sustain are not flagged.</i>",
+        f"<i>Measured window: a value outside the stated range continuously for "
+        f"&ge;&nbsp;{int(settings.episodic_event_min_hours)}&nbsp;hour. "
+        f"Windows separated by &le;&nbsp;{int(settings.episode_merge_gap_hours)}&nbsp;hour "
+        f"of in range values are counted as the same window. "
+        f"Brief crossings that do not sustain are not counted.</i>",
         st["legend"]
     )
 
@@ -1358,12 +1364,12 @@ def render_timeline_date_axis(segments, reporting_days, content_width_inches, da
     return date_axis_table
 
 PLAIN_NAMES = {
-    'Severe bradycardia': 'Very Low Heart Rate',
     'Bradycardia': 'Low Heart Rate',
     'Tachycardia': 'High Heart Rate',
-    'Elevated HR': 'Elevated Heart Rate',
     'Very High HR': 'Very High Heart Rate',
+    'Low RR': 'Low Breathing',
     'Tachypnea': 'Elevated Breathing',
+    'High RR': 'High Breathing',
 }
 
 def plain_name(condition_key):
@@ -1767,10 +1773,10 @@ _REDUCED_COVERAGE_FOOTNOTE = (
 )
 
 
-def _finding_phrase(row):
+def _finding_phrase(row, label=None):
     if not row:
         return ""
-    cat = row.get('category', 'finding')
+    cat = label or row.get('category', 'finding')
     dd = row.get('duration_descriptor', '')
     hrs = row.get('total_hours', 0)
     is_low = 'low' in (row.get('phase_type') or '')
@@ -1782,18 +1788,33 @@ def _finding_phrase(row):
     return txt + ")"
 
 
+# Notable Days panel labels — heart-rate conditions abbreviated ("Low HR"),
+# breathing kept readable, matching the design's compact panel wording.
+_NOTABLE_LABELS = {
+    'low_hr': 'Low HR', 'high_hr': 'High HR', 'very_high_hr': 'Very High HR',
+    'low_rr': 'Low Breathing', 'elevated_rr': 'Elevated Breathing', 'high_rr': 'High Breathing',
+}
+
+
+def _finding_phrase_short(row):
+    """`_finding_phrase` with the compact Notable-Days label so the narrow panel
+    stays to a few lines per entry."""
+    return _finding_phrase(row, label=_NOTABLE_LABELS.get(row.get('phase_type')))
+
+
 def _why_flagged_sentence(report, narrative):
-    """B5 — one promoted sentence naming the worst finding and why triage fired.
-    Assembled from the already-computed triage inputs; empty for a GREEN report."""
+    """One promoted sentence at the top naming the worst measured finding and the
+    review posture. Regulatory-safe measurement framing: no "Flagged RED", no
+    triage-tier word, no "Provider review". Empty for a routine (GREEN) report."""
     triage = str(_v(report, 'triage', '') or '').upper()
     if triage not in ('RED', 'YELLOW'):
         return ""
     row = _worst_episode_row(narrative)
     if not row:
         return ""
-    cov = (", reduced coverage" if _has_reduced_coverage_finding(narrative) else "")
-    verb = "Provider review recommended." if triage == 'RED' else "Closer observation suggested."
-    return f"Flagged {triage} — {_finding_phrase(row)}{cov}. {verb}"
+    cov = (", during a reduced coverage window" if _has_reduced_coverage_finding(narrative) else "")
+    verb = "Review recommended." if triage == 'RED' else "Closer observation suggested."
+    return f"{_finding_phrase(row)}{cov}. {verb}"
 
 
 def _priority_grade_basis(report, narrative):
@@ -1888,13 +1909,636 @@ def _build_episode_appendix(rows, st):
     return out
 
 
+# ── Redesign single-page layout (July 14) ───────────────────────────────────
+# Structure follows the approved mockup, rendered light: header + review badge,
+# a stat-tile row, a Last 24 hours box, a narrative episodic-events list (top 4),
+# a measured-windows band, an inline clinical review line, the measurement
+# thresholds legend, and a caveat footer. Heart rate = red family, breathing =
+# blue family are the only colors. No page two, no appendix.
+
+def _family_text_color(phase_type):
+    from .config import THRESHOLD_LEGEND_COLORS as _TLC
+    return _hex(_TLC.get(phase_type, "#333333"))
+
+
+def _strip_unit(s):
+    """'109 bpm' → '109'."""
+    return str(s or "").replace(" bpm", "").replace(" brpm", "").replace(" breaths/min", "").strip()
+
+
+def _period_phrase(ws, we):
+    import pandas as _pd
+    try:
+        a = _pd.Timestamp(ws); b = _pd.Timestamp(we)
+        if a.year == b.year:
+            return f"{a.strftime('%B %-d')} to {b.strftime('%B %-d, %Y')}"
+        return f"{a.strftime('%B %-d, %Y')} to {b.strftime('%B %-d, %Y')}"
+    except Exception:
+        return ""
+
+
+def _review_badge(triage, st):
+    """Neutral review badge for the header top-right. No alert wording."""
+    t = str(triage or "").upper()
+    if t in ("RED", "YELLOW"):
+        label, bg, fg = "Review recommended", _hex("#FBE8D3"), _hex("#9A3412")
+    else:
+        # Calm neutral slate — a monitoring STATE, not a green "all clear" claim.
+        label, bg, fg = "Routine monitoring", _hex("#EEF1F5"), _hex("#3F4C5C")
+    bstyle = ParagraphStyle('rev_badge', parent=st['badge'], fontSize=9,
+                            textColor=fg, alignment=TA_CENTER)
+    cell = Table([[Paragraph(f"<b>{label}</b>", bstyle)]],
+                 colWidths=[1.7 * inch], rowHeights=[0.26 * inch])
+    cell.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), bg),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('BOX', (0, 0), (-1, -1), 0.5, fg),
+        ('ROUNDEDCORNERS', [4, 4, 4, 4]),
+    ]))
+    return cell
+
+
+def _stat_tile(value, label, st, accent=None, val_fs=15, lbl_fs=6.5):
+    val_style = ParagraphStyle('tile_val', parent=st['body_bold'], fontSize=val_fs,
+                               leading=val_fs + 2, textColor=accent or _DARK_TEXT)
+    lbl_style = ParagraphStyle('tile_lbl', parent=st['legend'], fontSize=lbl_fs,
+                               leading=lbl_fs + 1.5, textColor=_GRAY_TEXT)
+    return [Paragraph(f"<b>{value}</b>", val_style), Spacer(1, 1),
+            Paragraph(label, lbl_style)]
+
+
+_HR_PHASE_SET = {"low_hr", "high_hr", "very_high_hr"}
+_RR_PHASE_SET = {"low_rr", "elevated_rr", "high_rr"}
+_NUM_WORDS = {0: "no", 1: "one", 2: "two", 3: "three", 4: "four", 5: "five",
+              6: "six", 7: "seven", 8: "eight", 9: "nine", 10: "ten",
+              11: "eleven", 12: "twelve"}
+
+
+def _spell_count(n):
+    return _NUM_WORDS.get(n, str(n))
+
+
+def _event_line_markup(r):
+    """A Last 24 hours event, laid out on two clean lines (no mid-value wrap):
+        line 1: <colored condition> — descriptor, Nh
+        line 2: window, values[ — comment]
+    The <br/> after the descriptor keeps the condition line intact and moves the
+    window and values to their own line."""
+    from .config import THRESHOLD_LEGEND_COLORS as _TLC
+    cond = _html.escape(str(r.get('category', '')))
+    color = _TLC.get(r.get('phase_type'), "#333333")
+    desc = str(r.get('duration_descriptor', '') or '').strip()
+    hrs = r.get('total_hours', r.get('duration_hours', 0))
+    descriptor = f"{desc}, {hrs}h" if desc else f"{hrs}h"
+    date = _html.escape(str(r.get('date', '')))
+    span = _html.escape(str(r.get('time_span', '')))
+    avg = _html.escape(str(r.get('average', '')))
+    mn = _strip_unit(r.get('min')); mx = _strip_unit(r.get('max'))
+    vals = f"{avg} ({mn} to {mx})" if avg else ""
+    guide = _html.escape(str(r.get('comment', '')))
+    when = f"{date}, {span}" if date else span
+    tail = f" &mdash; {guide}." if guide else ""
+    return (f"<b><font color='{color}'>{cond}</font></b> &mdash; {descriptor}<br/>"
+            f"{when}, {vals}{tail}")
+
+
+def _event_card(r, st, page_w):
+    """One episodic-event card: a bordered box tinted by the condition's family
+    color, with the condition (colored) + descriptor, the window and values, the
+    plain guidance line, and a reduced-coverage caveat when relevant."""
+    from .config import THRESHOLD_LEGEND_COLORS as _TLC
+    cond = _html.escape(str(r.get('category', '')))
+    color = _TLC.get(r.get('phase_type'), "#333333")
+    desc = str(r.get('duration_descriptor', '') or '').strip()
+    hrs = r.get('total_hours', r.get('duration_hours', 0))
+    descriptor = f"{desc}, {hrs}h" if desc else f"{hrs}h"
+    date = _html.escape(str(r.get('date', '')))
+    span = _html.escape(str(r.get('time_span', '')))
+    when = f"{date}, {span}" if date else span
+    avg = _html.escape(str(r.get('average', '')))
+    mn = _strip_unit(r.get('min')); mx = _strip_unit(r.get('max'))
+    vals = f"{avg} ({mn} to {mx})" if avg else ""
+    guide = _html.escape(str(r.get('comment', '')))
+
+    # R29 redesign — one compact ROW per window (design grid 200px | 1fr | auto):
+    # condition + descriptor | date/time + values | italic note. Single-row keeps
+    # page 1 tight enough to seat the per-day plot + Notable Days region below.
+    name_s = ParagraphStyle('ev_name', parent=st['body'], fontSize=8.5, leading=10.5)
+    detail_s = ParagraphStyle('ev_detail', parent=st['body'], fontSize=8, leading=10)
+    note_s = ParagraphStyle('ev_note', parent=st['legend'], fontSize=7.5, leading=9.5,
+                            textColor=_GRAY_TEXT, fontName='Helvetica-Oblique')
+    name_p = Paragraph(f"<b><font color='{color}'>{cond}</font></b> "
+                       f"<font color='#666666'>&middot; {_html.escape(descriptor)}</font>", name_s)
+    detail_p = Paragraph(f"{when} &nbsp;&middot;&nbsp; {vals}", detail_s)
+    note_p = Paragraph(_html.escape(guide) + ("." if guide else ""), note_s) if guide else Paragraph("", note_s)
+
+    c1 = 1.85 * inch
+    c3 = 2.7 * inch
+    c2 = page_w - c1 - c3
+    card = Table([[name_p, detail_p, note_p]], colWidths=[c1, c2, c3])
+    card.setStyle(TableStyle([
+        ('BOX', (0, 0), (-1, -1), 0.5, _hex("#E4E7F5")),
+        ('LINEBEFORE', (0, 0), (0, -1), 2, _hex(color)),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('LEFTPADDING', (0, 0), (0, 0), 10),
+        ('LEFTPADDING', (1, 0), (-1, -1), 8),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+    ]))
+    return card
+
+
+def _build_report_story_redesign(report, st, page_w):
+    """Assemble the redesigned single-page report body."""
+    import pandas as _pd
+    from .config import THRESHOLD_LEGEND_COLORS as _TLC, RENDER_CONFIG as _RC
+
+    els = []
+    pid = _v(report, 'patient_id', 'Patient')
+    ws = _v(report, 'window_start'); we = _v(report, 'window_end')
+    coverage = _v(report, 'coverage_summary', '') or ''
+    triage = str(_v(report, 'triage', '') or '')
+    hr = _v(report, 'hr_summaries', {}) or {}
+    rr = _v(report, 'rr_summaries', {}) or {}
+    dq = _v(report, 'data_quality', {}) or {}
+    episodes = _v(report, 'episodes', []) or []
+    nar = _v(report, 'narrative') if isinstance(_v(report, 'narrative'), dict) else {}
+    rows = (nar.get('episode_table_rows', []) if nar else []) or []
+    snap = _v(report, 'snapshot_24h', {}) or {}
+    cov_pct = dq.get('coverage_pct')
+
+    def _num(d, k, default=0):
+        try:
+            return float(d.get(k)) if d.get(k) is not None else default
+        except Exception:
+            return default
+
+    # ── 1. Header: branded title band + review badge, then the meta line ─────
+    # Same look as the original report (dark-blue "CLINICAL INTELLIGENCE TREND
+    # REPORT" band with a badge on the right), but the badge text stays neutral
+    # and measurement-framed (never "RED: Provider Review Recommended").
+    t_up = str(triage or "").upper()
+    if t_up in ("RED", "YELLOW"):
+        badge_label, badge_bg, badge_fg = "Review recommended", _hex("#FBE8E4"), _hex("#9A1B1B")
+    else:
+        badge_label, badge_bg, badge_fg = "Routine monitoring", _hex("#EEF1F5"), _hex("#3F4C5C")
+    badge_style = ParagraphStyle('rd_badge', parent=st['badge'], fontSize=11,
+                                 textColor=badge_fg, alignment=TA_RIGHT)
+    band = Table([[Paragraph("TREND REPORT", st["title"]),
+                   Paragraph(f"<b>{badge_label}</b>", badge_style)]],
+                 colWidths=[page_w * 0.62, page_w * 0.38])
+    band.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("BACKGROUND", (0, 0), (0, 0), _HEADER_BG),
+        ("BACKGROUND", (1, 0), (1, 0), badge_bg),
+        ("TOPPADDING", (0, 0), (-1, -1), 7),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+        ("LEFTPADDING", (0, 0), (0, 0), 9),
+        ("RIGHTPADDING", (1, 0), (1, 0), 9),
+    ]))
+    els.append(band)
+    els.append(Spacer(1, 4))
+
+    report_date_str = _format_report_date(_v(report, "report_date"))
+    meta = [[
+        Paragraph(f"<b>Patient ID:</b> {_html.escape(str(pid))}", st["meta_line"]),
+        Paragraph(f"<b>Period:</b> {_html.escape(_period_phrase(ws, we))}", st["meta_line"]),
+        Paragraph(f"<b>Report Date:</b> {_html.escape(report_date_str)}", st["meta_line"]),
+        Paragraph(f"<b>Coverage:</b> {_html.escape(str(coverage))}", st["meta_line"]),
+    ]]
+    meta_tbl = Table(meta, colWidths=[page_w * 0.20, page_w * 0.30, page_w * 0.23, page_w * 0.27])
+    meta_tbl.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+    ]))
+    els.append(meta_tbl)
+    els.append(Spacer(1, 4))
+    els.append(HRFlowable(width="100%", thickness=1, color=_BORDER, spaceAfter=6))
+
+    def _thick_sep():
+        return HRFlowable(width="100%", thickness=2.5, color=_hex("#C9CED6"),
+                          spaceBefore=5, spaceAfter=7)
+
+    # ── 4. Why-flagged sentence in a rounded outlined box, full width ─────────
+    why = _why_flagged_sentence(report, nar)
+    if why:
+        why_color = "#B91C1C" if t_up == "RED" else "#B45309"
+        why_style = ParagraphStyle('rd_why', parent=st['body'], fontSize=9.5, leading=12,
+                                   textColor=_hex(why_color))
+        why_box = Table([[Paragraph(f"<b>{_html.escape(why)}</b>", why_style)]],
+                        colWidths=[page_w])
+        why_box.setStyle(TableStyle([
+            ('BOX', (0, 0), (-1, -1), 0.75, _hex("#C9CED6")),
+            ('ROUNDEDCORNERS', [7, 7, 7, 7]),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 11),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 11),
+            ('TOPPADDING', (0, 0), (-1, -1), 7),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 7),
+        ]))
+        els.append(why_box)
+
+    # ── 5. Thick separator → 6. "Last 24 Hours" heading (two-tone) ────────────
+    els.append(_thick_sep())
+    _dark_hex = f"#{_DARK_TEXT.hexval()[2:]}"
+    _blue_hex = f"#{_BRAND_BLUE.hexval()[2:]}"
+    els.append(Paragraph(
+        f'<font color="{_dark_hex}">Last 24 Hours</font> '
+        f'<font color="{_blue_hex}">Episodic Events</font>',
+        ParagraphStyle('rd_l24_head', parent=st['title'], fontSize=15,
+                       leading=18, textColor=_DARK_TEXT)))
+    els.append(Spacer(1, 4))
+
+    # ── 7. Last 24 hours box — split into a Heart Rate section and a Breathing
+    # section side by side, each in its family color. Each section states its own
+    # episodic-event count, lists those events explicitly (same narrative format
+    # and comment ladder as the period list), then its own vital summary. Both
+    # sections always render, including a section with zero events. The single
+    # combined summary sentence is gone; the per-section counts replace it.
+    shr = snap.get('hr', {}) or {}
+    srr = snap.get('rr', {}) or {}
+    snap_events = snap.get('events') or []
+
+    title_s = ParagraphStyle('rd_l24_sec', parent=st['body_bold'], fontSize=9, leading=11)
+    count_s = ParagraphStyle('rd_l24_cnt', parent=st['body'], fontSize=8.5, leading=10.5)
+    ev_s = ParagraphStyle('rd_l24_ev', parent=st['body'], fontSize=7.5, leading=9.5, spaceBefore=1)
+    spread_s = ParagraphStyle('rd_l24_spread', parent=st['body'], fontSize=8.5, leading=10.5)
+    _L24_EVENT_CAP = 3
+    _sec_box_w = page_w / 2.0 - 24  # inside the half-width section, minus padding
+
+    def _spread_box(d, unit):
+        # The vital range in its own box, labeled "Spread" so it can never be
+        # confused with the period P5-P95 tile. Range first, average in brackets.
+        mn, mx, av = _num(d, 'min'), _num(d, 'max'), _num(d, 'avg')
+        txt = (f"<b>Spread:</b> {mn:.0f} to {mx:.0f} "
+               f"<font size=7 color='#6B7280'>(avg: {av:.0f})</font> {unit}")
+        box = Table([[Paragraph(txt, spread_s)]], colWidths=[_sec_box_w])
+        box.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, -1), colors.white),
+            ('BOX', (0, 0), (-1, -1), 0.5, _BORDER),
+            ('LEFTPADDING', (0, 0), (-1, -1), 6),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ]))
+        return box
+
+    def _l24_section(name, color_hex, phase_set, vital, unit):
+        evs = [e for e in snap_events if e.get('phase_type') in phase_set]
+        n = len(evs)
+        flow = [Paragraph(f"<b><font color='{color_hex}'>{name}</font></b>", title_s)]
+        if n == 0:
+            flow.append(Paragraph("No measured windows", count_s))
+        else:
+            flow.append(Paragraph(
+                f"{_spell_count(n).capitalize()} measured window{'' if n == 1 else 's'}", count_s))
+            ranked = sorted(evs, key=lambda r: -(r.get('severity_score', 0) or 0))
+            for r in ranked[:_L24_EVENT_CAP]:
+                flow.append(Paragraph(_event_line_markup(r), ev_s))
+            if n > _L24_EVENT_CAP:
+                flow.append(Paragraph(f"<i>plus {n - _L24_EVENT_CAP} more windows</i>", st['legend']))
+        flow.append(Spacer(1, 4))
+        flow.append(_spread_box(vital, unit))
+        return flow
+
+    hr_col = _l24_section("Heart rate", _TLC['high_hr'], _HR_PHASE_SET, shr, 'bpm')
+    rr_col = _l24_section("Breathing", _TLC['elevated_rr'], _RR_PHASE_SET, srr, 'brpm')
+    half = (page_w - 0.0) / 2.0
+    box_tbl = Table([[hr_col, rr_col]], colWidths=[half, half])
+    box_tbl.setStyle(TableStyle([
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('BACKGROUND', (0, 0), (0, 0), _hex("#FDF3F1")),   # light red — heart rate
+        ('BACKGROUND', (1, 0), (1, 0), _hex("#F0F5FC")),   # light blue — breathing
+        ('BOX', (0, 0), (-1, -1), 0.75, _BORDER),
+        ('LINEAFTER', (0, 0), (0, 0), 0.75, _BORDER),
+        ('LEFTPADDING', (0, 0), (-1, -1), 10),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 10),
+        ('TOPPADDING', (0, 0), (-1, -1), 8),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+    ]))
+    els.append(box_tbl)
+    els.append(Spacer(1, 6))
+
+    # ── 8. Thick separator → 9. Patient status band over the period ──────────
+    els.append(_thick_sep())
+    phases = _v(report, "phases", []) or []
+    display_phases = [p for p in phases if PHASE_LABELS.get(_v(p, 'type', 'normal')) is not None]
+    try:
+        _days = compute_reporting_period_days(ws, we)
+    except Exception:
+        _days = None
+    if display_phases and _days:
+        els.append(_render_status_heading_with_index(report, _days, page_w, st))
+        els.append(Spacer(1, 4))   # breathing room between the heading and the bar
+        bar = render_phase_blocks_bar(display_phases, page_w / inch, st)
+        if bar is not None:
+            els.append(bar)
+        els.append(Spacer(1, 6))
+
+    # ── 11. Episodic events, measurement data — boxed cards, top 4 ───────────
+    els.append(Paragraph("Measured windows", st['section_head']))
+    els.append(Spacer(1, 3))
+    ranked = sorted(rows, key=lambda r: -(r.get('severity_score', 0) or 0))[:4]
+    if not ranked:
+        els.append(Paragraph("<i>No measurement windows outside the stated ranges.</i>",
+                             st['legend']))
+    for r in ranked:
+        els.append(_event_card(r, st, page_w))
+        els.append(Spacer(1, 4))
+    if len(rows) > len(ranked):
+        els.append(Paragraph(f"<i>plus {len(rows) - len(ranked)} more windows</i>", st['legend']))
+    els.append(Spacer(1, 9))
+
+    # ── Stat-tile row — supporting context at the BOTTOM, rendered small so the
+    # episodic events dominate the page (client markup: "Move this here, and
+    # reduce size"). Period P5-P95, coverage, and measured-windows count.
+    hr_p5, hr_p95 = _num(hr, 'p5'), _num(hr, 'p95')
+    rr_p5, rr_p95 = _num(rr, 'p5'), _num(rr, 'p95')
+    cov_str = f"{cov_pct:.0f}%" if cov_pct is not None else (coverage.split('(')[-1].rstrip(')') if '(' in coverage else "—")
+    # Measured-windows count must match the canonical event count used by the
+    # narrative list (cross-surface parity).
+    window_count = len(rows) if rows else len(episodes)
+    tiles = [
+        _stat_tile(f"{hr_p5:.0f} to {hr_p95:.0f}", "Heart rate P5 to P95 (bpm)", st, _hex(_TLC['high_hr']), val_fs=10, lbl_fs=5.5),
+        _stat_tile(f"{rr_p5:.0f} to {rr_p95:.0f}", "Breathing P5 to P95 (brpm)", st, _hex(_TLC['elevated_rr']), val_fs=10, lbl_fs=5.5),
+        _stat_tile(cov_str, "Coverage", st, val_fs=10, lbl_fs=5.5),
+        _stat_tile(str(window_count), "Measured windows", st, val_fs=10, lbl_fs=5.5),
+    ]
+    tw = (page_w - 0.3 * inch) / 4.0
+    tile_tbl = Table([tiles], colWidths=[tw] * 4)
+    tile_tbl.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), _LIGHT_BG),
+        ('BOX', (0, 0), (-1, -1), 0.5, _BORDER),
+        ('INNERGRID', (0, 0), (-1, -1), 0.5, _BORDER),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 6),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+    ]))
+    els.append(tile_tbl)
+
+    # ── Caveat footer ───────────────────────────────────────────────────────
+    # The caveat is pinned to the VERY BOTTOM of page 1 (drawn on the canvas via
+    # the onFirstPage callback in generate_pdf), not appended inline here, so it
+    # always sits as a true page footer regardless of how tall the body is.
+    return els
+
+
+def _caveat_text(report):
+    """The bottom-of-page-1 caveat: the measurement-only disclaimer plus a
+    coverage sentence carrying this report's signal coverage."""
+    disclaimer = str(_v(report, 'disclaimer', '') or '')
+    dq = _v(report, 'data_quality', {}) or {}
+    cov_pct = dq.get('coverage_pct')
+    cov_sentence = ""
+    if cov_pct is not None:
+        cov_sentence = (f" Signal coverage {cov_pct:.0f}%; interpret windows during "
+                        f"reduced coverage with caution.")
+    return disclaimer + cov_sentence
+
+
+def _build_page2_elements(report, df, st, page_w):
+    """Page 2 (July 14): the restored trend and distribution graphs — the SAME
+    charts as the pre-redesign report (daily candlestick trend, HR/breathing
+    distributions, daily monitoring activity), with the Clinical Measurement
+    Thresholds legend at the bottom. The full-episode appendix stays removed."""
+    from .charts import (generate_candlestick_for_pdf, generate_histogram_for_pdf,
+                         generate_activity_trend_chart_for_pdf)
+    els = [PageBreak()]
+    els.extend(_build_compact_header(report, st, page_w, 2, total_pages=2))
+    els.append(Spacer(1, 4))
+
+    # Daily trend — the original candlestick: daily HR and breathing min/max
+    # range bars with the average, episode days highlighted.
+    els.append(Paragraph("Daily trend", st["section_head"]))
+    els.append(Spacer(1, 2))
+    try:
+        candle = generate_candlestick_for_pdf(
+            df, _v(report, 'episodes', []) or [], phases=_v(report, 'phases', None),
+            window_start=_v(report, 'window_start'), window_end=_v(report, 'window_end'))
+        els.append(Image(io.BytesIO(candle),
+                         width=settings.plot_width_inches * inch, height=2.55 * inch))
+    except Exception:
+        pass
+    els.append(Spacer(1, 14))
+
+    # Distributions — the original HR / breathing histograms with labeled
+    # threshold lines.
+    els.append(Paragraph("Distribution", st["section_head"]))
+    els.append(Spacer(1, 3))
+    try:
+        _hr_summ = _v(report, 'hr_summaries', None)
+        hist = generate_histogram_for_pdf(
+            df, hr_p5=_v(_hr_summ, 'p5', None), hr_p95=_v(_hr_summ, 'p95', None))
+        els.append(Image(io.BytesIO(hist),
+                         width=settings.histogram_width_inches * inch,
+                         height=settings.histogram_height_inches * inch))
+    except Exception:
+        pass
+    els.append(Spacer(1, 14))
+
+    # Daily monitoring coverage — the original activity chart.
+    els.append(Paragraph("Daily monitoring coverage", st["section_head"]))
+    els.append(Spacer(1, 3))
+    try:
+        act = generate_activity_trend_chart_for_pdf(df)
+        els.append(Image(io.BytesIO(act),
+                         width=settings.activity_width_inches * inch,
+                         height=settings.activity_height_inches * inch))
+    except Exception:
+        pass
+    els.append(Spacer(1, 10))
+
+    # Clinical Measurement Thresholds legend — bottom of page 2, beneath graphs.
+    els.append(HRFlowable(width="100%", thickness=0.5, color=_BORDER, spaceAfter=5))
+    els.extend(_build_threshold_legend(st, include_note=False))
+    els.append(Spacer(1, 2))
+    els.append(_threshold_definition_note(st))
+    return els
+
+
+def _build_notable_days_panel(report, st, panel_w):
+    """The NOTABLE DAYS panel (redesign, R29) — the right column beside the
+    per-day plot. ≤3 generated entries from this patient's own windows; a single
+    measurement-framed line when none qualify. Never fabricates or pads."""
+    from .notable_days import compute_notable_days
+    from .config import (EPD_ACCENT_COLOR, NOTABLE_DAYS_HEADING,
+                         NOTABLE_DAYS_NONE_LINE)
+    nar = _v(report, 'narrative', {}) or {}
+    rows = nar.get('episode_table_rows', []) if isinstance(nar, dict) else []
+    entries = compute_notable_days(
+        rows, _v(report, 'window_start'), _v(report, 'window_end'), _finding_phrase_short)
+
+    head_style = ParagraphStyle('nd_head', parent=st['legend'], fontSize=7,
+                                leading=9, textColor=_GRAY_TEXT, spaceAfter=2,
+                                fontName='Helvetica-Bold')
+    body_style = ParagraphStyle('nd_body', parent=st['legend'], fontSize=7.2,
+                                leading=8.8, textColor=_hex('#292B31'), spaceAfter=2.5)
+    out = [Paragraph(NOTABLE_DAYS_HEADING, head_style)]
+    if not entries:
+        out.append(Paragraph(_html.escape(NOTABLE_DAYS_NONE_LINE), body_style))
+    else:
+        dot = f'<font color="{EPD_ACCENT_COLOR}">●</font> '
+        for e in entries:
+            out.append(Paragraph(
+                f"{dot}<b>{_html.escape(e['when'])}</b> — {_html.escape(e['what'])}",
+                body_style))
+    return out
+
+
+def _build_events_and_notable_region(report, episodes, st, page_w):
+    """Redesign page-1 bottom region (universal, all reports): the 'Episodic
+    events per day' plot (with HR/BR heatmap strip + co-occurrence dots) on the
+    left and the NOTABLE DAYS panel on the right, a caption below. ``episodes``
+    is the FULL detected list (report['episodes'] is capped, so it would
+    undercount). Reads the patient's own merged per-day series."""
+    import pandas as pd
+    from .charts import (generate_events_per_day_chart_for_pdf,
+                         compute_events_per_day)
+    eps = episodes or (_v(report, 'episodes', []) or [])
+    ws, we = _v(report, 'window_start'), _v(report, 'window_end')
+    agg = compute_events_per_day(eps, ws, we)
+    total = sum(agg["hr"]) + sum(agg["rr"])
+    start_ts, total_days = agg["start"], agg["total_days"]
+    end_ts = start_ts + pd.Timedelta(days=total_days - 1)
+
+    # Section header — title + date-range span (the HR/Breathing key lives on the
+    # 'Last 31 days' band above, matching the design).
+    hdr = (f"Episodic events per day <font color='#666666' size='9'>"
+           f"&middot; {start_ts.strftime('%b %d')} to {end_ts.strftime('%b %d')}, "
+           f"{end_ts.year} (days 1 to {total_days})</font>")
+    els = [Spacer(1, 3), Paragraph(hdr, st["section_head"]), Spacer(1, 1)]
+
+    # Two-column band: plot (left) | Notable Days (right ~1.7in).
+    right_w = 1.7 * inch
+    gap = 10
+    left_w = page_w - right_w - gap
+    chart_h = 1.32
+    png = generate_events_per_day_chart_for_pdf(
+        eps, ws, we, patient_id=_v(report, 'patient_id', ''),
+        fig_width_in=left_w / inch, fig_height_in=chart_h)
+    left_cell = Image(io.BytesIO(png), width=left_w, height=chart_h * inch)
+    right_cell = _build_notable_days_panel(report, st, right_w)
+    band = Table([[left_cell, right_cell]], colWidths=[left_w + gap, right_w])
+    band.setStyle(TableStyle([
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('LEFTPADDING', (0, 0), (0, 0), 0), ('RIGHTPADDING', (0, 0), (0, 0), gap),
+        ('LEFTPADDING', (1, 0), (1, 0), 0), ('RIGHTPADDING', (1, 0), (1, 0), 0),
+        ('TOPPADDING', (0, 0), (-1, -1), 0), ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+    ]))
+    els.append(band)
+
+    # Caption — matches the design wording; co-occurrence days with dates.
+    if total == 0:
+        caption = ("Bars: count of episodic events per day (breathing blue, heart "
+                   "rate red). No windows outside the stated ranges this period.")
+    else:
+        caption = (f"Bars: count of episodic events per day (breathing blue, heart "
+                   f"rate red). Daily counts sum to the {total} measured windows "
+                   f"for the period.")
+        if agg["cooccur"]:
+            # Cap the listed co-occurrence days so a busy patient (many such days)
+            # keeps the caption to a single line; the Notable Days panel already
+            # surfaces the standout ones. "and N more" preserves the true count.
+            _cc = agg["cooccur"]
+            _cap = 5
+            days_txt = ", ".join(f"{n} ({d})" for n, d in _cc[:_cap])
+            if len(_cc) > _cap:
+                days_txt += f", and {len(_cc) - _cap} more"
+            caption += f" Both vitals outside range the same day on days {days_txt}."
+    els.append(Spacer(1, 2))
+    els.append(Paragraph(f"<i>{_html.escape(caption)}</i>", st["legend"]))
+    return els
+
+
 def generate_pdf(report: ReportResponse, df=None, episodes=None,
                  one_page_only: bool = False) -> bytes:
-    """Build the patient PDF report.
+    """Build the patient PDF report (redesign, July 14).
 
-    R15 E1: when ``one_page_only`` is True, the renderer stops after page 1
-    content (no PageBreak, no histogram/activity-chart page). Used for the
-    PAMHealth study packaging variant.
+    Page 1 is the approved summary (header, stat tiles, Last 24 hours box,
+    narrative episodic events, measured-windows band, inline clinical review).
+    Page 2 restores the trend and distribution graphs, restyled to the light
+    theme and family colors, with the thresholds legend at its bottom. The
+    full-episode appendix stays removed; there is no third page.
+    """
+    buf = io.BytesIO()
+    st = _styles()
+    _pid = _v(report, 'patient_id', 'Patient')
+    try:
+        import pandas as _pd
+        _ws = _v(report, 'window_start', '')
+        _mlabel = _pd.Timestamp(_ws).strftime('%B %Y') if _ws else ''
+    except Exception:
+        _mlabel = ''
+    _doc_title = f"CardioReport {_pid}" + (f" {_mlabel}" if _mlabel else "")
+    doc = SimpleDocTemplate(
+        buf, pagesize=letter,
+        leftMargin=0.5 * inch, rightMargin=0.5 * inch,
+        topMargin=0.4 * inch, bottomMargin=0.35 * inch,
+        title=_doc_title, author="CardioReport",
+    )
+    page_w = letter[0] - 1.0 * inch
+    elements = _build_report_story_redesign(report, st, page_w)
+    # R29 redesign — the 'Episodic events per day' plot + NOTABLE DAYS panel sit
+    # at the bottom of page 1 on EVERY report (both cohorts, all report types). A
+    # region edge case degrades to "report without the region" rather than failing
+    # the whole patient's PDF.
+    try:
+        elements.extend(_build_events_and_notable_region(report, episodes, st, page_w))
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception(
+            "events/notable region failed for %s", _v(report, 'patient_id'))
+    # Page 2 graphs — only when hourly data is available (always, in batch runs).
+    if df is not None and not one_page_only:
+        elements.extend(_build_page2_elements(report, df, st, page_w))
+
+    # Caveat pinned to the very bottom of PAGE 1 (drawn on the canvas so it sits
+    # at the page foot regardless of body height). Page 2 gets no canvas footer.
+    caveat = _caveat_text(report)
+    foot_style = ParagraphStyle('rd_footcanvas', parent=st['disclaimer'], fontSize=7,
+                                leading=9, textColor=_GRAY_TEXT)
+
+    def _draw_page1_footer(canvas, _doc):
+        if not caveat:
+            return
+        para = Paragraph(_html.escape(caveat), foot_style)
+        w, h = para.wrap(page_w, 60)
+        x = 0.5 * inch
+        y = 0.35 * inch  # bottom margin
+        canvas.saveState()
+        canvas.setStrokeColor(_BORDER)
+        canvas.setLineWidth(0.5)
+        canvas.line(x, y + h + 4, x + page_w, y + h + 4)
+        para.drawOn(canvas, x, y)
+        canvas.restoreState()
+
+    doc.build(elements, onFirstPage=_draw_page1_footer, onLaterPages=(lambda c, d: None))
+
+    buf.seek(0)
+    pdf_bytes = buf.read()
+    try:
+        from PyPDF2 import PdfReader as _PdfReader
+        page_count = len(_PdfReader(io.BytesIO(pdf_bytes)).pages)
+        expected = 1 if (df is None or one_page_only) else 2
+        if page_count > expected:
+            import logging
+            logging.getLogger(__name__).warning(
+                f"Page overflow: {_v(report, 'patient_id')} rendered as {page_count} pages "
+                f"(expected {expected}). Content may need further compression."
+            )
+    except ImportError:
+        pass
+    return pdf_bytes
+
+
+def _generate_pdf_legacy(report: ReportResponse, df=None, episodes=None,
+                         one_page_only: bool = False) -> bytes:
+    """Deprecated pre-redesign two-page renderer. Retained for reference only;
+    not called. See ``generate_pdf`` for the current single-page layout.
     """
     buf = io.BytesIO()
     st = _styles()
@@ -2357,16 +3001,22 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
             # visible row is marked.
             if any(r.get('reduced_coverage') for r in display_rows):
                 elements.append(Paragraph(f"<i>{_REDUCED_COVERAGE_FOOTNOTE}</i>", st["legend"]))
-            # Follow-up Fix 2 — pointer to the appendix (never a silent drop):
-            # "plus N more (see appendix)". The full episode list is preserved in
-            # the appendix table rendered at the end of the report.
+            # Follow-up Fix 2 — pointer for the truncated findings (never a silent
+            # drop). When the appendix is enabled it reads "plus N more (see
+            # appendix)" and the full per-episode record is rendered at the end of
+            # the report. When disabled, the pointer reads "plus N more episodes"
+            # and no appendix is referenced or rendered.
             if overflow_rows:
-                elements.append(Paragraph(
-                    f"<i>plus {len(overflow_rows)} more (see appendix)</i>", st["body"]))
-                # Full per-episode record, chronological, same A1 integrity.
-                _appendix_rows = sorted(
-                    episode_rows,
-                    key=lambda r: str(r.get('start_time', '')))
+                if settings.include_full_episode_appendix:
+                    elements.append(Paragraph(
+                        f"<i>plus {len(overflow_rows)} more (see appendix)</i>", st["body"]))
+                    # Full per-episode record, chronological, same A1 integrity.
+                    _appendix_rows = sorted(
+                        episode_rows,
+                        key=lambda r: str(r.get('start_time', '')))
+                else:
+                    elements.append(Paragraph(
+                        f"<i>plus {len(overflow_rows)} more episodes</i>", st["body"]))
             # R22.B: physiologic-clipping footnote removed. RR is no longer
             # clipped (Sprint A noise filter handles bad data); HR clipping
             # only fires for extreme sensor garbage that does not occur in the

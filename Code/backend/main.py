@@ -58,7 +58,7 @@ from .pdf_render import generate_pdf
 app = FastAPI(
     title="CardioReport API",
     version=settings.app_version,
-    description="Clinician-grade RPM intelligence report engine",
+    description="RPM trend report engine",
 )
 
 
@@ -452,7 +452,7 @@ async def _run_pipeline(req: ReportRequest) -> tuple[dict, "pd.DataFrame"]:
         "data_resolution": data_resolution,
         "coverage_summary": coverage_summary,
         "snapshot_24h": snapshot_24h,
-        "disclaimer": "Decision-support summary derived from longitudinal vital sign trends; interpret in clinical context.",
+        "disclaimer": "Measurement data only. Not a diagnosis. Values reflect selected windows where heart rate or breathing was outside the stated ranges, from radar based vital sign measurement.",
         "hr_summaries": hr_stats.model_dump() if hasattr(hr_stats, "model_dump") else hr_stats,
         "rr_summaries": rr_stats.model_dump() if hasattr(rr_stats, "model_dump") else rr_stats,
         "full_stats": full_stats.model_dump() if full_stats else None,

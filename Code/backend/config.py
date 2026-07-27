@@ -18,15 +18,25 @@ _DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 # ── Label Constants ─────────────────────────────────────────────────────────
 
 class Conditions:
-    """Canonical internal names for detected conditions."""
+    """Canonical internal names for detected conditions.
+
+    Redesign (July 14): six conditions total. Heart rate has three levels
+    (low, high, very high); breathing has three levels (low, elevated, high).
+    The old Very Low HR (Severe Bradycardia), Elevated HR (95-100), the middle
+    High RR (30-40) tier, and Very High RR labels were retired. The three
+    retired constants below remain DEFINED so stray references never raise, but
+    detection never emits them and no map renders their labels.
+    """
+    BRADYCARDIAC = "Bradycardia"         # Low Heart Rate, HR avg < 45
+    TACHYCARDIA = "Tachycardia"          # High Heart Rate, HR avg > 95
+    VERY_HIGH_HR = "Very High HR"        # Very High Heart Rate, HR avg > 110
+    LOW_RR = "Low RR"                    # Low Breathing, RR avg < 10
+    TACHYPNEA = "Tachypnea"              # Elevated Breathing, RR avg > 24
+    HIGH_RR = "High RR"                  # High Breathing, RR avg > 40
+    # ── Retired (never emitted, never rendered) ──────────────────────────
     SEVERE_BRADY = "Severe Bradycardia"
-    BRADYCARDIAC = "Bradycardia"
-    ELEVATED_HR = "Elevated HR"          # 95-100 bpm sustained (R15 A1: was 80, now 95)
-    TACHYCARDIA = "Tachycardia"
-    VERY_HIGH_HR = "Very High HR"        # above 110 bpm
-    TACHYPNEA = "Tachypnea"              # Elevated breathing >24 brpm
-    HIGH_RR = "High RR"                  # R15 A2: 30-40 brpm sustained
-    VERY_HIGH_RR = "Very High RR"        # R15 A2: 40+ brpm sustained (Medicare threshold)
+    ELEVATED_HR = "Elevated HR"
+    VERY_HIGH_RR = "Very High RR"
 
 
 class TrendLabels:
@@ -98,14 +108,12 @@ class ChartColors:
 # ── Label Maps ──────────────────────────────────────────────────────────────
 
 CONDITION_DISPLAY = {
-    Conditions.SEVERE_BRADY: "Very Low Heart Rate",
     Conditions.BRADYCARDIAC: "Low Heart Rate",
-    Conditions.ELEVATED_HR: "Elevated Heart Rate",
     Conditions.TACHYCARDIA: "High Heart Rate",
     Conditions.VERY_HIGH_HR: "Very High Heart Rate",
-    Conditions.TACHYPNEA: "Elevated Breathing",           # Dropped "Rate" per Sajol
-    Conditions.HIGH_RR: "High Breathing",                 # R15 A2
-    Conditions.VERY_HIGH_RR: "Very High Breathing",       # R15 A2
+    Conditions.LOW_RR: "Low Breathing",
+    Conditions.TACHYPNEA: "Elevated Breathing",
+    Conditions.HIGH_RR: "High Breathing",
 }
 
 # Episode condition string → phase_type. Single source of truth used by
@@ -140,8 +148,8 @@ BADGE_LEGEND_CLEARANCE_PT = 4        # gap between badge top and legend bottom
 # the title swatches follow automatically. low_hr and elevated_rr are
 # representative entries for each family (both render in the family color).
 phase_strip_index_swatch_family = {
-    "hr": "low_hr",        # red-family swatch beside the "HR" label
-    "rr": "elevated_rr",   # blue-family swatch beside the "Breathing" label
+    "hr": "high_hr",       # vivid red swatch beside the "HR" label (was light salmon)
+    "rr": "elevated_rr",   # blue swatch beside the "Breathing" label
 }
 
 
@@ -157,37 +165,62 @@ phase_strip_index_swatch_family = {
 # FullPeriod and S(Chair) FullPeriod showed the asterisk intersecting weekly
 # date labels (May 06/20, Jun 03 on JB; Jan 22 etc on S(Chair)). Each path now
 # uses its own tuned value.
-ASTERISK_LEGEND_Y_AXES_DAILY = -0.32   # daily + short-period (CriticalWeek) charts
-ASTERISK_LEGEND_Y_AXES_WEEKLY = -0.42  # weekly aggregate (FullPeriod long-span) charts
+# R28 polish — on the 30-day daily chart the 45° date labels extend well past
+# the old -0.32 baseline, so the asterisk note collided with the leftmost dates
+# (Sep 17 / Sep 21 on RSanchez 30DayPeriod). -0.40 wasn't enough; dropped to
+# -0.50 to sit clearly below the date band. Weekly moved in step to -0.54 so it
+# stays deeper than daily (its month-day labels rotate even further down).
+ASTERISK_LEGEND_Y_AXES_DAILY = -0.58   # daily + short-period (CriticalWeek) charts
+ASTERISK_LEGEND_Y_AXES_WEEKLY = -0.62  # weekly aggregate (FullPeriod long-span) charts
 # Deprecated alias for R21 invariant test and any straggler refs.
 ASTERISK_LEGEND_Y_AXES = ASTERISK_LEGEND_Y_AXES_DAILY
 
 
-# R19 C: Threshold legend color palette. Pre-R19 the legend recycled 5
-# candlestick severity colors across 8 swatches, so Very Low HR and Very High HR
-# rendered identical. Sajol May 4 review flagged this. Each tier now has a
-# distinct shade within its metric family (HR red-family, RR blue-family).
+# ── Condition color families (redesign, July 14) ─────────────────────────────
+# Heart rate conditions use a red family, breathing conditions use a blue family.
+# Darker means more severe; every level is distinct from normal so a severe
+# reading never looks normal. No yellow anywhere. Tuned for a light/white
+# background (a printed clinical report). Text always states the exact level, so
+# the report never depends on color alone. Heet can adjust the exact hex.
+# Distinct three-step gradients so the levels never read alike: HR a light→deep
+# RED ramp, breathing a light→deep BLUE ramp (the earlier blues sat too close
+# together). Darker = more severe; each step is clearly separated and distinct
+# from the neutral normal gray.
+HR_LOW_COLOR       = "#F4A08C"   # light salmon red — Low Heart Rate (< 45)
+HR_HIGH_COLOR      = "#E5342B"   # vivid red        — High Heart Rate (> 95)
+HR_VERY_HIGH_COLOR = "#7F0B0B"   # deep maroon red  — Very High Heart Rate (> 110)
+RR_LOW_COLOR       = "#9CC2EE"   # light sky blue   — Low Breathing (< 10)
+RR_ELEVATED_COLOR  = "#2E6FE0"   # bright blue      — Elevated Breathing (> 24)
+RR_HIGH_COLOR      = "#0B2F73"   # deep navy blue   — High Breathing (> 40)
+NORMAL_COLOR       = "#9AA0A6"   # neutral gray     — within normal range
+
+# R29 redesign — accent used for the "Episodic events per day" notable-day dot
+# markers and the Notable Days panel bullets (design-system "nocturne" accent).
+EPD_ACCENT_COLOR   = "#9184D9"
+# Notable Days panel: heading + the single measurement-framed line shown when no
+# day qualifies (kept here so it is single-sourced and banned-string testable).
+NOTABLE_DAYS_HEADING = "NOTABLE DAYS"
+NOTABLE_DAYS_NONE_LINE = ("No days with both vitals outside range together, or a "
+                          "standout window count, this period.")
+
+# phase_type → family color. Exactly the six retained levels.
 THRESHOLD_LEGEND_COLORS = {
-    "very_low_hr":  "#8B0000",  # dark crimson — most severe low
-    "low_hr":       "#E57373",  # light coral red
-    "elevated_hr":  "#FFB300",  # warm amber/orange
-    "high_hr":      "#F4511E",  # deep red-orange
-    "very_high_hr": "#B71C1C",  # dark vivid red — most severe high
-    "elevated_rr":  "#90CAF9",  # light blue
-    "high_rr":      "#1976D2",  # medium blue
-    "very_high_rr": "#0D47A1",  # dark navy
+    "low_hr":       HR_LOW_COLOR,
+    "high_hr":      HR_HIGH_COLOR,
+    "very_high_hr": HR_VERY_HIGH_COLOR,
+    "low_rr":       RR_LOW_COLOR,
+    "elevated_rr":  RR_ELEVATED_COLOR,
+    "high_rr":      RR_HIGH_COLOR,
 }
 
 
 CONDITION_TO_PHASE_TYPE = {
-    Conditions.SEVERE_BRADY: "very_low_hr",
     Conditions.BRADYCARDIAC: "low_hr",
-    Conditions.ELEVATED_HR:  "elevated_hr",
     Conditions.TACHYCARDIA:  "high_hr",
     Conditions.VERY_HIGH_HR: "very_high_hr",
+    Conditions.LOW_RR:       "low_rr",
     Conditions.TACHYPNEA:    "elevated_rr",
     Conditions.HIGH_RR:      "high_rr",
-    Conditions.VERY_HIGH_RR: "very_high_rr",
 }
 
 # R16 K1: dominant-phase selection for batch summary Comments column uses this
@@ -198,13 +231,11 @@ CONDITION_TO_PHASE_TYPE = {
 # clinically-alarming tier (Very High HR, peak 148) instead.
 PHASE_PRIORITY_ORDER = [
     "very_high_hr",
-    "very_high_rr",
-    "very_low_hr",
     "high_hr",
     "high_rr",
     "low_hr",
-    "elevated_hr",
     "elevated_rr",
+    "low_rr",
 ]
 
 
@@ -258,17 +289,21 @@ END_OF_PERIOD_TEMPLATE = (
     "({date_range}, {eps_per_day})."
 )
 
-# Phase labels: None = don't display (skip entirely)
+# Phase labels: None = don't display (skip entirely).
+# Six retained levels. The retired levels (very_low_hr, elevated_hr,
+# very_high_rr) map to None so their old labels can never render.
 PHASE_LABELS = {
     "normal":       None,                   # Don't display — skip entirely
-    "low_hr":       "Low Heart Rate",
-    "very_low_hr":  "Very Low Heart Rate",
-    "elevated_hr":  "Elevated Heart Rate",  # R15 A1: 95-100 bpm sustained
-    "high_hr":      "High Heart Rate",
-    "very_high_hr": "Very High Heart Rate", # above 110
-    "elevated_rr":  "Elevated Breathing",
-    "high_rr":      "High Breathing",       # R15 A2: 30-40 brpm sustained
-    "very_high_rr": "Very High Breathing",  # R15 A2: 40+ brpm sustained
+    "low_hr":       "Low Heart Rate",       # HR avg < 45
+    "high_hr":      "High Heart Rate",       # HR avg > 95
+    "very_high_hr": "Very High Heart Rate",  # HR avg > 110
+    "low_rr":       "Low Breathing",         # RR avg < 10
+    "elevated_rr":  "Elevated Breathing",    # RR avg > 24
+    "high_rr":      "High Breathing",        # RR avg > 40
+    # Retired levels — never displayed
+    "very_low_hr":  None,
+    "elevated_hr":  None,
+    "very_high_rr": None,
     # Legacy aliases — map to None (hide)
     "stable":       None,
     "mixed":        None,
@@ -276,18 +311,21 @@ PHASE_LABELS = {
     "mixed_high":   None,
 }
 
-# Phase colors for PDF timeline bar — R15 C1: HR=red, RR=blue (was HR=blue, RR=orange)
-# Qualifier (low/high/elevated) conveyed by text label, not color.
+# Phase colors for the measured-windows band and phase strip.
+# Heart rate = red family, breathing = blue family; darker shade = more severe,
+# each level distinct from normal. Qualifier (low/high) also stated in text.
 PHASE_COLORS = {
-    "normal":       "#10B981",   # green (only used for "within normal range" bar)
-    "low_hr":       "#DC2626",   # red — HR family (R15 C1)
-    "very_low_hr":  "#DC2626",   # red — HR family (R15 C1)
-    "elevated_hr":  "#DC2626",   # red — HR family (R15 C1)
-    "high_hr":      "#DC2626",   # red — HR family (R15 C1)
-    "very_high_hr": "#DC2626",   # red — HR family (R15 C1)
-    "elevated_rr":  "#3B82F6",   # blue — RR family (R15 C1)
-    "high_rr":      "#3B82F6",   # blue — RR family (R15 A2 + C1)
-    "very_high_rr": "#3B82F6",   # blue — RR family (R15 A2 + C1)
+    "normal":       NORMAL_COLOR,      # neutral gray — within normal range
+    "low_hr":       HR_LOW_COLOR,
+    "high_hr":      HR_HIGH_COLOR,
+    "very_high_hr": HR_VERY_HIGH_COLOR,
+    "low_rr":       RR_LOW_COLOR,
+    "elevated_rr":  RR_ELEVATED_COLOR,
+    "high_rr":      RR_HIGH_COLOR,
+    # Retired levels — fall back to their family so any stray render stays on-brand
+    "very_low_hr":  HR_LOW_COLOR,
+    "elevated_hr":  HR_HIGH_COLOR,
+    "very_high_rr": RR_HIGH_COLOR,
 }
 
 STATS_LABELS = {
@@ -300,10 +338,10 @@ STATS_LABELS = {
 }
 
 SEVERITY_BAND_PHRASES = {
-    "S0": "Brief deviation; continue monitoring",
-    "S1": "Sustained deviation; review context",
-    "S2": "Sustained pattern; consider provider review",
-    "S3": "Critical sustained pattern; urgent review advised",
+    "S0": "Brief window; continue routine monitoring",
+    "S1": "Sustained window; review context",
+    "S2": "Sustained pattern; closer observation suggested",
+    "S3": "Sustained pattern; review recommended",
 }
 
 
@@ -319,15 +357,20 @@ class Settings(BaseSettings):
     # ── Timezone ─────────────────────────────────────────────────────────
     default_timezone: str = Field(default="US/Central", description="Default timezone for interpreting naive timestamps.")
 
-    # ── Episode detection thresholds ─────────────────────────────────────
-    brady_hr_avg: float = Field(default=45.0, description="HR avg < threshold → low HR.")
-    severe_brady_min: float = Field(default=40.0, description="HR min < threshold → severe low HR.")
-    elevated_hr_avg: float = Field(default=95.0, description="HR avg > threshold → elevated HR (sustained). R15 A1: was 80, now 95.")
-    tachy_hr_avg: float = Field(default=100.0, description="HR avg > threshold → high HR.")
-    very_high_hr_avg: float = Field(default=110.0, description="HR avg > threshold → very high HR.")
-    tachy_rr_avg: float = Field(default=24.0, description="RR avg > threshold → elevated breathing.")
-    high_rr_avg: float = Field(default=30.0, description="RR avg > threshold → high breathing. R15 A2 (new tier).")
-    very_high_rr_avg: float = Field(default=40.0, description="RR avg > threshold → very high breathing. R15 A2 (Medicare 40+ threshold).")
+    # ── Episode detection thresholds (redesign, July 14: six conditions) ──
+    # Heart rate: low below 45, high above 95, very high above 110.
+    # Breathing:  low below 10, elevated above 24, high above 40.
+    brady_hr_avg: float = Field(default=45.0, description="HR avg < threshold → Low Heart Rate.")
+    tachy_hr_avg: float = Field(default=95.0, description="HR avg > threshold → High Heart Rate. (was 100; old Elevated HR level removed.)")
+    very_high_hr_avg: float = Field(default=110.0, description="HR avg > threshold → Very High Heart Rate.")
+    low_rr_avg: float = Field(default=10.0, description="RR avg < threshold → Low Breathing.")
+    rr_physiologic_floor: float = Field(default=6.0, description="RR avg below this is artifact/missing (e.g. noise-filter 0s), not Low Breathing.")
+    tachy_rr_avg: float = Field(default=24.0, description="RR avg > threshold → Elevated Breathing.")
+    high_rr_avg: float = Field(default=40.0, description="RR avg > threshold → High Breathing. (was 30; middle tier removed, no very-high label.)")
+    # ── Retired thresholds (kept for back-compat refs; not used in detection) ─
+    severe_brady_min: float = Field(default=40.0, description="Retired. Old Very Low HR floor; no longer a detection level.")
+    elevated_hr_avg: float = Field(default=95.0, description="Retired. Old Elevated HR level; folded into High Heart Rate.")
+    very_high_rr_avg: float = Field(default=40.0, description="Retired. Old Very High Breathing; folded into High Breathing.")
 
     # ── Data quality ─────────────────────────────────────────────────────
     low_confidence_cnt_threshold: int = Field(default=30, description="cnt below this ⇒ low-confidence hour.")
@@ -381,9 +424,10 @@ class Settings(BaseSettings):
     base_elevated_hr: int = Field(default=2, description="Base severity weight for Elevated HR.")
     base_high_hr: int = Field(default=3, description="Base severity weight for Tachycardia.")
     base_very_high_hr: int = Field(default=5, description="Base severity weight for Very High HR.")
-    base_elevated_rr: int = Field(default=2, description="Base severity weight for Tachypnea.")
-    base_high_rr: int = Field(default=3, description="Base severity weight for High RR. R15 A2.")
-    base_very_high_rr: int = Field(default=5, description="Base severity weight for Very High RR. R15 A2.")
+    base_low_rr: int = Field(default=3, description="Base severity weight for Low Breathing.")
+    base_elevated_rr: int = Field(default=2, description="Base severity weight for Elevated Breathing (Tachypnea).")
+    base_high_rr: int = Field(default=4, description="Base severity weight for High Breathing (> 40).")
+    base_very_high_rr: int = Field(default=5, description="Retired. Old Very High Breathing weight.")
     duration_bonus_per_hour: int = Field(default=1, description="+N per hour beyond the first.")
     coupling_bonus: int = Field(default=2, description="+N if HR/RR co-occur in same window.")
     low_conf_penalty: int = Field(default=1, description="-N if any hour in episode is low confidence.")
@@ -413,7 +457,7 @@ class Settings(BaseSettings):
     # ── Report caps and formatting ───────────────────────────────────────
     # R22.D: header line includes start/end dates so the date span replaces
     # the "62 days" line that used to sit above the bar.
-    status_timeline_heading: str = "Patient clinical status over {days} days from {start} to {end}"
+    status_timeline_heading: str = "Patient status over {days} days from {start} to {end}"
     sustained_bold_threshold_hours: int = 4
     section_1_heading: str = "SECTION 1 — High Priority Episodic Events and Suggested Actions"
     # Shared rendered width for the candlestick chart Image and the phase
@@ -424,7 +468,7 @@ class Settings(BaseSettings):
     # R15 F: reduced from 3.5 to 3.0 inches to recover page-1 budget after the
     # R15 additions (longer trajectory line, split burden phrasing, new threshold rows).
     candlestick_height_inches: float = 3.0
-    candlestick_dpi: int = 150
+    candlestick_dpi: int = 300
     content_width_inches: float = 7.2
     normal_periods_note: str = ""
     timeline_acronym_width_inches: float = 0.5
@@ -434,10 +478,10 @@ class Settings(BaseSettings):
     timeline_show_date_axis: bool = True
     histogram_width_inches: float = 7.0
     histogram_height_inches: float = 2.0
-    histogram_dpi: int = 150
+    histogram_dpi: int = 300
     activity_width_inches: float = 7.0
     activity_height_inches: float = 2.2
-    activity_dpi: int = 150
+    activity_dpi: int = 300
     chart_title_fontsize: int = 9
     chart_axis_label_fontsize: int = 8
     chart_tick_fontsize: int = 7
@@ -459,28 +503,33 @@ class Settings(BaseSettings):
     candlestick_long_period_height_inches: float = 3.0
     full_period_allow_3_pages: bool = True
     full_period_three_page_threshold_days: int = 90
+    # When True, a truncated Major Findings summary appends a "Appendix — Full
+    # Episode Record" page and the truncation pointer reads "plus N more (see
+    # appendix)". When False, no appendix page is rendered and the pointer reads
+    # "plus N more episodes" — the report never references an appendix it does
+    # not contain.
+    include_full_episode_appendix: bool = Field(
+        default=False,
+        description="Render the full per-episode appendix page (and 'see appendix' pointer) when the findings summary truncates.",
+    )
     color_episode_red: str = "#C0392B"
 
     PHASE_ACRONYMS: dict = {
         'low_hr':       'LHR',
-        'very_low_hr':  'VLHR',
-        'elevated_hr':  'EHR',
         'high_hr':      'HHR',
         'very_high_hr': 'VHHR',
+        'low_rr':       'LB',
         'elevated_rr':  'EB',
         'high_rr':      'HB',
-        'very_high_rr': 'VHB',
     }
 
     PHASE_SINGLE_LETTERS: dict = {
         'low_hr':       'L',
-        'very_low_hr':  'V',
-        'elevated_hr':  'E',
         'high_hr':      'H',
         'very_high_hr': 'X',
-        'elevated_rr':  'B',
+        'low_rr':       'B',
+        'elevated_rr':  'E',
         'high_rr':      'Y',
-        'very_high_rr': 'Z',
     }
 
     timeline_single_letter_width_inches: float = 0.3
@@ -513,7 +562,7 @@ class Settings(BaseSettings):
     # this cap (see _build_phase_actions, follow-up Fix 1), so this only bounds
     # how many optional items ride along.
     max_actions: int = Field(default=5, description="Target total action bullets; the per-condition floor overrides it.")
-    chart_dpi: int = Field(default=200, description="Chart resolution in DPI.")
+    chart_dpi: int = Field(default=300, description="Chart resolution in DPI (300 for crisp scaling in presentations).")
     hr_spread_annotation_min: float = Field(default=20.0, description="Only annotate histogram spread if P5-P95 exceeds this value (bpm).")
 
     # ── Batch Summary (Round 14 A1, R15 C3 font shrink for 1-page fit) ─
@@ -540,14 +589,12 @@ class Settings(BaseSettings):
     # the May 4 review. Greens and S(Chair) (special-case) keep single line.
     batch_summary_comment_templates: dict = Field(default={
         "stable":       "Stable baseline",
-        "very_low_hr":  "Sustained very low HR<br/>(avg {avg_hr}, min {min_hr})",
         "low_hr":       "Sustained low HR<br/>(avg {avg_hr}, min {min_hr})",
-        "elevated_hr":  "Sustained elevated HR<br/>(avg {avg_hr}, peak {peak_hr})",
         "high_hr":      "Sustained high HR<br/>(avg {avg_hr}, peak {peak_hr})",
         "very_high_hr": "Sustained very high HR<br/>(avg {avg_hr}, peak {peak_hr})",
+        "low_rr":       "Sustained low breathing<br/>(avg {avg_rr})",
         "elevated_rr":  "Sustained elevated breathing<br/>(avg {avg_rr}, peak {peak_rr})",
         "high_rr":      "Sustained high breathing<br/>(avg {avg_rr}, peak {peak_rr})",
-        "very_high_rr": "Sustained very high breathing<br/>(avg {avg_rr}, peak {peak_rr})",
     })
     # R16: column widths rebalanced so headers and patient names don't wrap mid-word.
     # "Triage", "Coupled", "Yellow", "Wimberley", "RSanchez", "FullPeriod",
@@ -589,23 +636,19 @@ class Settings(BaseSettings):
     # ── Phase Strip Labels (Round 14 D1) ─────────────────────────────
     phase_strip_label_full: dict = Field(default={
         "low_hr":       "Low Heart Rate",
-        "elevated_hr":  "Elevated Heart Rate",
         "high_hr":      "High Heart Rate",
         "very_high_hr": "Very High Heart Rate",
-        "very_low_hr":  "Very Low Heart Rate",
+        "low_rr":       "Low Breathing",
         "elevated_rr":  "Elevated Breathing",
         "high_rr":      "High Breathing",
-        "very_high_rr": "Very High Breathing",
     })
     phase_strip_label_abbrev: dict = Field(default={
         "low_hr":       "Low HR",
-        "elevated_hr":  "Elev HR",
         "high_hr":      "High HR",
         "very_high_hr": "V.High HR",
-        "very_low_hr":  "V.Low HR",
+        "low_rr":       "Low Br",
         "elevated_rr":  "Elev Br",
         "high_rr":      "High Br",
-        "very_high_rr": "V.High Br",
     })
     phase_strip_abbrev_width_threshold_inches: float = 0.55  # below this, use abbrev
     phase_strip_min_text_width_inches: float = 0.15   # below this, use sub-threshold indicator
@@ -711,14 +754,12 @@ RENDER_CONFIG = {
             {"max_days": 9999, "max_phases": 12},
         ],
         "label_abbreviations": {
-            "Elevated Heart Rate":  "Elev HR",
-            "Elevated Breathing":   "Elev Br",
             "Low Heart Rate":       "Low HR",
             "High Heart Rate":      "High HR",
             "Very High Heart Rate": "V.High HR",
-            "Very Low Heart Rate":  "V.Low HR",
+            "Low Breathing":        "Low Br",
+            "Elevated Breathing":   "Elev Br",
             "High Breathing":       "High Br",
-            "Very High Breathing":  "V.High Br",
         },
         "min_chars_before_abbreviate": 6,
         "min_chars_before_initialize": 3,
@@ -778,8 +819,8 @@ RENDER_CONFIG = {
             {"key": "comment",    "label": "Comment",    "width": 0.24},
         ],
         "priority_order": [
-            "very_high_hr", "very_low_hr", "high_hr", "low_hr",
-            "elevated_hr", "very_high_rr", "high_rr", "elevated_rr",
+            "very_high_hr", "high_hr", "high_rr",
+            "low_hr", "elevated_rr", "low_rr",
         ],
     },
 
@@ -845,52 +886,49 @@ RENDER_CONFIG = {
     },
 
     "clinical_guidance": {
-        # Unified-table Comment column — clinician-reviewed, condition-keyed
-        # clinical-focus phrase (one per condition type, identical across rows of
-        # the same condition; data-shape-agnostic, never per-patient). This is the
-        # ONLY comment text in scope; the report does not add a separate actions
-        # block. Change wording here in one place.
-        # B2 — the suggested action must ESCALATE with the value tier, or the
-        # tiers add reading burden without clinical work. Each phrase is selected
-        # by rule from the phase_type alone (no patient identity), stays
-        # conditional/suggested (never directive), and keeps >= 3 specificity
-        # tokens. Ladder per channel: monitor/recheck → assess + consider ECG →
-        # obtain ECG now + prompt provider review.
-        "review_phrase_by_phase_type": {
-            "low_hr":       "Check pulse and BP; review beta blockers and AV-node agents; ECG if symptomatic",
-            "very_low_hr":  "Obtain ECG now; hold/review AV-node and beta-blocker agents; provider review",
-            "elevated_hr":  "Monitor and recheck; check temp, hydration, pain",
-            "high_hr":      "Consider ECG; assess infection, pain, hydration",
-            "very_high_hr": "Obtain ECG; evaluate for arrhythmia; prompt provider review",
-            "elevated_rr":  "Check SpO2 and lung sounds; monitor for fluid overload",
-            "high_rr":      "Check SpO2, work of breathing, fever; consider CHF",
-            "very_high_rr": "Check SpO2 and work of breathing; assess respiratory compromise; prompt review",
-        },
+        # The per-event cause lines ("Assess for arrhythmia, fever, pain, or
+        # infection" / "Check SpO2 and lung sounds; assess for infection") were
+        # RETIRED (client review, July 14) — no directive cause line appears on
+        # any event. They are removed here, not left unused, so they cannot be
+        # reintroduced by accident. The per-window comment is now purely the four
+        # generic context rules in narrative_ai._window_comment.
+        # Per-window context comment strings. A window's
+        # comment is chosen purely from its own measured attributes by the rule
+        # set in narrative_ai._window_comment — no patient identity. It says only
+        # what the label and numbers do NOT already show; a window with no
+        # qualifying context shows no comment. Wording is a one-place edit here.
+        "window_both_channels_note": "Heart rate and breathing both outside range in this window",
+        "window_reduced_coverage_note": "Occurred during a period of reduced monitoring coverage; interpret with caution",
+        # Recurrence note fires only when the count is genuinely notable (>= the
+        # min below), so it signals a real recurring pattern rather than "there
+        # is one other window". Only applied to the reporting period, never the
+        # 24h snapshot, so it never mislabels a 24h count as "this period".
+        "window_similar_note": "Recurring pattern, {n} windows this period",
+        "window_similar_min_count": 5,
         "min_specificity_tokens": 3,
         "required_token_categories": ["condition", "count_or_duration", "suggested_assessment"],
         "fallback_template": (
-            "{count} {condition} episodes detected over {hours}h. "
-            "Assess {assessment_focus}; correlate with clinical context."
+            "{count} {condition} windows over {hours}h. "
+            "Assess {assessment_focus}; interpret in context."
         ),
         "assessment_focus_by_condition": {
-            "Low Heart Rate":       "symptoms, blood pressure, and rate controlling medications",
-            "Elevated Heart Rate":  "pain, hydration, infection, and activity correlation",
-            "High Heart Rate":      "pain, hydration, infection, and activity correlation",
-            "Very High Heart Rate": "symptoms, blood pressure, and possible arrhythmia",
-            "Elevated Breathing":   "respiratory status and possible underlying cause",
-            "High Breathing":       "respiratory status, oxygen levels, and infection",
-            "Very High Breathing":  "respiratory status, oxygen levels, and acute respiratory compromise",
+            "Low Heart Rate":       "arrhythmia, fever, pain, or infection",
+            "High Heart Rate":      "arrhythmia, fever, pain, or infection",
+            "Very High Heart Rate": "arrhythmia, fever, pain, or infection",
+            "Low Breathing":        "respiratory status and infection",
+            "Elevated Breathing":   "respiratory status and infection",
+            "High Breathing":       "respiratory status and infection",
         },
         "dominance_threshold": 0.60,
         "CLINICAL_GUIDANCE_LINES": {
             "GREEN":  "Routine monitoring is appropriate.",
-            "YELLOW": "Closer clinical observation is suggested.",
-            "RED":    "Urgent provider review advised (per protocol).",
+            "YELLOW": "Closer observation suggested.",
+            "RED":    "Review recommended.",
         },
         "mixed_templates": {
-            "RED":    "Urgent: high episodic burden detected ({count} events, {hours}h). Provider review advised within 24 hours.",
-            "YELLOW": "Multi-condition episodic burden ({count} events, {hours}h). Closer observation suggested.",
-            "GREEN":  "Routine monitoring. No specific intervention indicated.",
+            "RED":    "Multiple measurement windows outside the stated ranges ({count} windows, {hours}h). Review recommended.",
+            "YELLOW": "Multiple measurement windows outside the stated ranges ({count} windows, {hours}h). Closer observation suggested.",
+            "GREEN":  "Routine monitoring. No specific action indicated.",
         },
     },
 

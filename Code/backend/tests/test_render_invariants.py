@@ -8,6 +8,7 @@ Run with:  python -m pytest backend/tests/test_render_invariants.py -v
 from __future__ import annotations
 import re
 import sys
+import pytest
 import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -764,6 +765,7 @@ def test_events_table_has_number_column():
     print("PASS: unified events table leads with Date, no '#' column")
 
 
+@pytest.mark.skip(reason="phase strip replaced by the measured-windows band (July 14 redesign)")
 def test_phase_numbers_single_source():
     """Superseded: the clinical status now renders as phase BLOCKS (label +
     date range, matching the web app), not the #N-numbered day-timeline strip.
@@ -810,6 +812,7 @@ def test_phase_strip_every_type_has_label():
     print("PASS: Every phase type has full label and abbreviation")
 
 
+@pytest.mark.skip(reason="phase strip replaced by the measured-windows band (July 14 redesign)")
 def test_phase_strip_uses_two_colors_only():
     """D2: Phase strip episode colors must collapse to exactly two (HR + RR)."""
     from backend.config import PHASE_COLORS
@@ -1258,6 +1261,7 @@ def test_phase_strip_index_uses_actual_strip_colors():
     print("PASS: Legend swatch colors resolve to strip colors")
 
 
+@pytest.mark.skip(reason="phase strip / index removed; generate_pdf rewritten (July 14 redesign)")
 def test_phase_strip_index_in_generate_pdf_source():
     """G2: generate_pdf must render the legend when enabled."""
     import inspect
@@ -1322,6 +1326,7 @@ def test_number_repetition_config():
 # Round 15 Sprint A — Threshold redefinitions
 # =====================================================================
 
+@pytest.mark.skip(reason="8-tier HR thresholds replaced by six conditions; see test_redesign_thresholds")
 def test_r15_a1_hr_elevated_is_95():
     """R15 A1: Elevated HR threshold moved from 80 to 95 bpm."""
     from backend.config import settings
@@ -1332,6 +1337,7 @@ def test_r15_a1_hr_elevated_is_95():
     print("PASS: R15 A1 HR tier thresholds are 95/100/110")
 
 
+@pytest.mark.skip(reason="three-tier RR replaced by low/elevated/high breathing (July 14 redesign)")
 def test_r15_a2_rr_tiers_present():
     """R15 A2: New high_rr (30) and very_high_rr (40) tiers configured."""
     from backend.config import settings, Conditions, PHASE_LABELS
@@ -1351,6 +1357,7 @@ def test_r15_a2_rr_tiers_present():
     print("PASS: R15 A2 RR tiers (24/30/40) wired into config and phase labels")
 
 
+@pytest.mark.skip(reason="three-tier RR replaced by six-condition detection (July 14 redesign)")
 def test_r15_a2_rr_detection_emits_three_tiers():
     """R15 A2: episodes.detect_episodes emits HIGH_RR and VERY_HIGH_RR conditions."""
     import pandas as pd
@@ -1476,6 +1483,7 @@ def test_r15_b5_hours_to_days_helper():
 # Round 15 Sprint C — Visual changes
 # =====================================================================
 
+@pytest.mark.skip(reason="phase strip replaced by the measured-windows band (July 14 redesign)")
 def test_r15_c1_strip_colors_flipped_hr_red_rr_blue():
     """R15 C1: Phase strip uses HR=red, RR=blue (flipped from R14's HR=blue, RR=orange)."""
     from backend.config import settings, PHASE_COLORS
@@ -1498,6 +1506,7 @@ def test_r15_c1_strip_colors_flipped_hr_red_rr_blue():
     print("PASS: R15 C1 strip colors flipped to HR=red, RR=blue")
 
 
+@pytest.mark.skip(reason="page-two charts and strip index removed (July 14 redesign)")
 def test_r15_c2_strip_index_legend_below_charts():
     """R15 C2: generate_pdf source places strip index legend after the trends chart."""
     import inspect
@@ -1577,17 +1586,19 @@ def test_r18_a1_rr_legend_below_plot():
 
     Sajol's May 4 review flagged Wimberley CW where the breathing-range bars
     were partially hidden behind an inline legend. Fixed by anchoring the RR
-    legend at bbox_to_anchor=(0.5, -0.22) on the daily-view candlestick chart.
+    legend below the plot with a negative bbox_to_anchor y. R29 dropped it from
+    -0.22 to -0.40 so the bordered legend box clears the rotated date labels
+    beneath the RR panel instead of overlapping them.
     """
     import inspect
+    import re as _re2
     from backend.charts import _generate_generic_candlestick
     src = inspect.getsource(_generate_generic_candlestick)
-    # The fix anchored the RR legend below with negative bbox_to_anchor y.
-    # Verify the source contains both markers — the legend call lives there.
     assert "ax_rr.legend" in src
-    assert "bbox_to_anchor=(0.5, -0.22)" in src, \
-        "R18 A: RR legend must be anchored below plot at y=-0.22"
-    print("PASS: R18 A1 RR legend positioned below plot")
+    m = _re2.search(r"bbox_to_anchor=\(0\.5,\s*(-\d+(?:\.\d+)?)\)", src)
+    assert m and float(m.group(1)) <= -0.34, \
+        "R18 A: RR legend must be anchored below the plot AND below the date labels (y <= -0.34)"
+    print("PASS: R18 A1 RR legend positioned below plot and date labels")
 
 
 def test_r18_b2_coverage_uses_days_format():
@@ -1723,6 +1734,7 @@ def test_r18_e1_trajectory_decrease_renders_red():
     print("PASS: R18 E1 trajectory down arrow renders red")
 
 
+@pytest.mark.skip(reason="events table replaced by the narrative event list (July 14 redesign)")
 def test_a1_events_table_is_per_episode_severity_ranked():
     """A1: the Major Findings table renders ONE ROW PER EPISODE (from
     episode_table_rows), severity-ranked, capped at max_rows with an overflow
@@ -1763,7 +1775,7 @@ def test_r21_a_asterisk_legend_below_tick_band():
     )
     import backend.charts as charts_mod
     src = inspect.getsource(charts_mod)
-    asterisk_emissions = src.count("* indicates concurrent HR and breathing abnormality")
+    asterisk_emissions = src.count("* indicates concurrent heart rate and breathing")
     constant_refs = src.count("ASTERISK_LEGEND_Y_AXES")
     assert asterisk_emissions >= 1, "Asterisk legend must still be emitted"
     assert constant_refs >= asterisk_emissions, (
@@ -1875,22 +1887,18 @@ def test_r20_b_episode_index_legend_entries_removed():
 
 
 def test_r19_a1_episode_day_map_classifies_high_rr_as_rr():
-    """R19 A: _build_episode_day_map must classify all RR conditions (Tachypnea,
-    High RR, Very High RR) as RR. Pre-R19 only Tachypnea was in rr_conditions,
-    so R15 A2 additions fell through to HR with default hr_type='low_hr' —
-    Wimberley's strip mislabeled 77 of his 97 RR episodes as Low HR (Sajol
-    May 4 review item 3c).
-    """
+    """Redesign: _build_episode_day_map must classify every breathing condition
+    (Low RR, Tachypnea, High RR) as RR, never falling through to the HR track."""
     from backend.pdf_render import _build_episode_day_map
     from backend.models import Episode
 
     eps = [
-        Episode(condition="Very High RR", start_time="2024-01-01 00:00",
+        Episode(condition="Low RR", start_time="2024-01-01 00:00",
                 end_time="2024-01-01 03:00", duration_hours=3,
-                key_vitals="RR 45", confidence="high"),
+                key_vitals="RR 8", confidence="high"),
         Episode(condition="High RR", start_time="2024-01-02 00:00",
                 end_time="2024-01-02 03:00", duration_hours=3,
-                key_vitals="RR 35", confidence="high"),
+                key_vitals="RR 45", confidence="high"),
         Episode(condition="Tachypnea", start_time="2024-01-03 00:00",
                 end_time="2024-01-03 03:00", duration_hours=3,
                 key_vitals="RR 26", confidence="high"),
@@ -1928,34 +1936,31 @@ def test_r19_b1_rr_spread_threshold_metric_specific():
 
 
 def test_r19_c1_threshold_legend_colors_unique():
-    """R19 C: All 8 threshold legend colors must be visually distinct hex values.
-    Pre-R19 the legend recycled 5 candlestick severity colors across 8 swatches —
-    Very Low HR and Very High HR rendered identical (Sajol May 4 review).
-    """
+    """Redesign: the six threshold legend colors must be visually distinct hex
+    values so no two levels render identically."""
     from backend.config import THRESHOLD_LEGEND_COLORS
     colors = list(THRESHOLD_LEGEND_COLORS.values())
-    assert len(set(colors)) == 8, (
-        f"R19 C: expected 8 unique threshold colors, got {len(set(colors))}: {colors}"
+    assert len(set(colors)) == 6, (
+        f"expected 6 unique threshold colors, got {len(set(colors))}: {colors}"
     )
-    print("PASS: R19 C1 threshold legend has 8 unique colors")
+    print("PASS: threshold legend has 6 unique colors")
 
 
 def test_r19_c2_threshold_legend_colors_match_metric_family():
-    """R19 C: HR tiers must use red-family colors; RR tiers must use blue-family
-    colors. Aligns with the chart-level color flip (R15 C1).
-    """
+    """Redesign: heart rate levels use red-family colors; breathing levels use
+    blue-family colors (HR red, breathing blue — the only report colors)."""
     from backend.config import THRESHOLD_LEGEND_COLORS
-    hr_tiers = ["very_low_hr", "low_hr", "elevated_hr", "high_hr", "very_high_hr"]
-    rr_tiers = ["elevated_rr", "high_rr", "very_high_rr"]
+    hr_tiers = ["low_hr", "high_hr", "very_high_hr"]
+    rr_tiers = ["low_rr", "elevated_rr", "high_rr"]
     for tier in hr_tiers:
         c = THRESHOLD_LEGEND_COLORS[tier]
         r, g, b = int(c[1:3], 16), int(c[3:5], 16), int(c[5:7], 16)
-        assert r > b, f"R19 C: HR tier {tier} ({c}) is not red-family (R={r}, B={b})"
+        assert r > b, f"HR level {tier} ({c}) is not red-family (R={r}, B={b})"
     for tier in rr_tiers:
         c = THRESHOLD_LEGEND_COLORS[tier]
         r, g, b = int(c[1:3], 16), int(c[3:5], 16), int(c[5:7], 16)
-        assert b > r, f"R19 C: RR tier {tier} ({c}) is not blue-family (R={r}, B={b})"
-    print("PASS: R19 C2 threshold legend colors match metric family (HR red, RR blue)")
+        assert b > r, f"breathing level {tier} ({c}) is not blue-family (R={r}, B={b})"
+    print("PASS: threshold legend colors match metric family (HR red, breathing blue)")
 
 
 def test_r17_window_scanner_parameterized():
@@ -2159,8 +2164,8 @@ def test_r15_e1_generate_pdf_supports_one_page_only():
     assert "one_page_only" in sig.parameters, \
         "generate_pdf must accept one_page_only parameter (R15 E1)"
     src = inspect.getsource(generate_pdf)
-    assert "one_page_only" in src and "doc.build(elements)" in src, \
-        "one_page_only branch must short-circuit doc.build before page break"
+    assert "one_page_only" in src and "doc.build(elements" in src, \
+        "generate_pdf must gate page 2 on one_page_only and build the document"
     print("PASS: R15 E1 generate_pdf supports one_page_only mode")
 
 
@@ -2275,6 +2280,7 @@ def test_r16_j1_batch_summary_header_matches_row_count():
     print(f"PASS: R16 J1 header reads {expected_patients}-Patient / {expected_reports} reports")
 
 
+@pytest.mark.skip(reason="batch-summary comment templates changed for six conditions (July 14 redesign)")
 def test_r16_j3_batch_summary_comments_use_standard_templates():
     """R16 J3: Comments column entries must be either "Stable baseline", a
     "Sustained ..." enriched template, or the S(Chair) outcome note. No legacy
@@ -2346,6 +2352,7 @@ def test_r16_j3_batch_summary_comments_use_standard_templates():
     print("PASS: R16 J3 Comments column uses only standard templates")
 
 
+@pytest.mark.skip(reason="dominant-phase fixture uses retired levels; priority order rebuilt for six conditions (July 14 redesign)")
 def test_r16_k1_dominant_phase_uses_priority_not_hours():
     """R16 K1: select_dominant_phase_type returns the highest-priority tier
     present, not the most-hours phase.
@@ -2645,7 +2652,7 @@ def test_r23_d_asterisk_legend_on_all_candlestick_paths():
         "(import + daily emission + weekly emission)"
     )
     # Both ax_rr.text (daily) and ax2.text (weekly) emissions must exist.
-    emission_count = charts_src.count("* indicates concurrent HR and breathing abnormality")
+    emission_count = charts_src.count("* indicates concurrent heart rate and breathing")
     assert emission_count >= 2, (
         f"Asterisk legend must be emitted on both daily and weekly paths; "
         f"found only {emission_count} emission(s)"
@@ -2904,6 +2911,7 @@ def test_r24_013_30day_trajectory_branch_present():
 
 # ── Round 25 — phase strip / candlestick width parity ─────────────────────
 
+@pytest.mark.skip(reason="page-two candlestick chart removed (July 14 redesign)")
 def test_r25_strip_and_chart_share_width_symbol():
     """R25 source-of-truth — the phase strip width and the candlestick chart
     Image width must read from the *same* settings symbol, not from two
@@ -2990,51 +2998,58 @@ def _extract_strip_and_chart_widths(pdf_path):
         strip_candidates.sort(reverse=True)
         strip_width = strip_candidates[0][1]
 
-        # The candlestick chart is the widest embedded image; in the R28 two-page
-        # layout it sits on the charts page (the last page), not page 1.
-        chart_page = doc[-1]
-        image_widths = [info["bbox"][2] - info["bbox"][0] for info in chart_page.get_image_info()]
-        assert image_widths, f"no images found on the charts page of {pdf_path}"
-        chart_width = max(image_widths)
+        # The candlestick chart is the widest embedded image. It lives on the
+        # charts page (the last page of the two-page BODY), which is NOT the
+        # document's last page when a full-episode appendix follows the body.
+        # Locate the charts page by content — the page carrying the widest image —
+        # rather than assuming doc[-1].
+        chart_width = 0.0
+        for page in doc:
+            for info in page.get_image_info():
+                w = info["bbox"][2] - info["bbox"][0]
+                if w > chart_width:
+                    chart_width = w
+        assert chart_width, f"no images found in {pdf_path}"
 
         return strip_width, chart_width
     finally:
         doc.close()
 
 
-def test_r25_phase_strip_width_matches_candlestick():
-    """R25 — phase strip rendered width is within 5% of the candlestick chart
-    rendered width on the same page.
+def test_page2_daily_trend_present():
+    """Reactivated (adapted from the retired R25 candlestick width test): every
+    per-patient report has a second page carrying the restored graphs, and the
+    daily-trend chart renders as a wide image on that page. Verifies the page-2
+    graphs came back with the redesign while the appendix stayed removed."""
+    import fitz
+    pdfs = _rendered_report_pdfs()
+    assert pdfs, ("No rendered reports found; regenerate both cohorts "
+                  "(pam_r28_batch.py / medhab_batch.py) before running this.")
+    checked = 0
+    for p in pdfs:
+        doc = fitz.open(p)
+        try:
+            assert doc.page_count == 2, f"{p.name}: expected 2 pages, got {doc.page_count}"
+            page2 = doc[1]
+            # Page 2 carries the trend, distribution, and coverage charts.
+            imgs = page2.get_image_info()
+            assert len(imgs) >= 3, f"{p.name}: page 2 has {len(imgs)} images, expected >= 3 charts"
+            # The daily-trend chart is a wide image (near the full content width).
+            page_w = page2.rect.width
+            widest = max((i["bbox"][2] - i["bbox"][0]) for i in imgs)
+            assert widest >= 0.75 * page_w, (
+                f"{p.name}: widest page-2 chart {widest:.0f}pt is under 75% of page width")
+            # The thresholds legend sits at the bottom of page 2.
+            t2 = page2.get_text()
+            assert "Measurement thresholds" in t2, \
+                f"{p.name}: thresholds legend not found on page 2"
+        finally:
+            doc.close()
+        checked += 1
+    print(f"PASS: page-2 daily trend + graphs present on {checked} reports")
 
-    Bounding boxes are measured from the rendered PDF (PyMuPDF) rather than
-    inferred from settings, so the invariant catches any future regression in
-    either render path — settings drift, container centering, or matplotlib
-    figsize changes.
-    """
-    from pathlib import Path
-    repo_root = Path(__file__).resolve().parent.parent.parent.parent
-    reports_dir = repo_root / "Reports" / "pam_health_r28"
-    targets = [
-        reports_dir / "02_EG_90DayPeriod.pdf",
-        reports_dir / "04_JB_90DayPeriod.pdf",
-    ]
-    available = [p for p in targets if p.exists()]
-    assert available, (
-        f"No R28 reference PDFs found under {reports_dir}; regenerate the cohort "
-        f"(python pam_r28_batch.py) before running this invariant."
-    )
 
-    for pdf_path in available:
-        strip_w, chart_w = _extract_strip_and_chart_widths(pdf_path)
-        ratio = strip_w / chart_w
-        assert 0.95 <= ratio <= 1.05, (
-            f"{pdf_path.name}: phase strip width {strip_w:.1f}pt vs candlestick "
-            f"chart width {chart_w:.1f}pt — ratio {ratio:.3f} outside [0.95, 1.05]. "
-            f"Strip and chart on the same page must share a baseline."
-        )
-    print(f"PASS: R25 strip/chart width parity on {len(available)} PDF(s)")
-
-
+@pytest.mark.skip(reason="events table replaced by the narrative event list (July 14 redesign)")
 def test_r16_l1_comments_match_events_table_row_1():
     """R26 Fix 2 (supersedes R16 L1): the dominant finding is the one with the
     MOST total episode-hours (burden-dominant), not the highest tier. Tier is
@@ -3368,6 +3383,7 @@ def _MH(month_key, patient):
         allow_low_coverage=True))
 
 
+@pytest.mark.skip(reason="burden/appendix integration removed with the events table (July 14 redesign)")
 def test_r26_fix2_burden_dominant_integration():
     """Fix 2: end-to-end, Harris April headlines the 11h Elevated-HR finding,
     not the 1h High-HR spikes."""
@@ -3585,6 +3601,7 @@ def test_ut_004_snapshot_hr_rr_no_fabricated_alert():
     print("PASS: UT.004 snapshot HR/RR avg/min/max, no fabricated alert")
 
 
+@pytest.mark.skip(reason="events table replaced by the narrative event list (July 14 redesign)")
 def test_ut_005_single_per_episode_table():
     """Only ONE per-episode table exists — the renderer builds the events table
     once and there is no second per-episode representation."""
@@ -3675,6 +3692,7 @@ def test_ut_007_rr_floor_excluded_from_statistics():
     print("PASS: UT.007 RR floor excluded from statistics")
 
 
+@pytest.mark.skip(reason="priority-grade line removed; report reframed as measurement data (July 14 redesign)")
 def test_ut_009_pdf_has_summary_line_and_tier_consistent_grade():
     """FIX 1/2: the PDF renders the overview summary line + a priority grade, and
     the grade is tier-consistent — a GREEN patient's PDF shows the grade but never
@@ -3711,6 +3729,7 @@ def _pdf_text(res):
     return "\n".join(p.extract_text() for p in PdfReader(_io.BytesIO(res["pdf_bytes"])).pages)
 
 
+@pytest.mark.skip(reason="24h layer restructured into the Last 24 hours box (July 14 redesign)")
 def test_r28_001_24h_episodic_subtable_present_or_empty_note():
     """The 24h block carries an episodic-events sub-table when events exist in
     the last 24h, and a plain 'no events' note otherwise — never a fabricated
@@ -3720,7 +3739,7 @@ def test_r28_001_24h_episodic_subtable_present_or_empty_note():
     snap = res["snapshot_24h"]
     assert snap and snap.get("event_count", 0) > 0
     assert snap.get("events"), "events in window -> sub-table rows must exist"
-    assert "Episodic Events (last 24h)" in _pdf_text(res)
+    assert "Episodic Events" in _pdf_text(res)
     # Quiet case — Wilson May has no 24h events: empty note, no fabrication.
     quiet = _MH("2026-05", "Wilson")
     qsnap = quiet["snapshot_24h"]
@@ -3780,6 +3799,7 @@ def test_r28_004_24h_status_same_severity_logic_scoped():
     print("PASS: R28.004 24h status uses tier severity logic, scoped; windows can disagree")
 
 
+@pytest.mark.skip(reason="window labeling moved into the redesigned single-page layout (July 14 redesign)")
 def test_r28_005_windows_explicitly_labeled():
     """The 24h window is labeled by the "Last 24 Hours" section, and the 30-day
     classification stays labeled in the report header (the triage badge) — so a
@@ -3843,6 +3863,7 @@ def test_r28_008_api_patients_client_scoped():
     print("PASS: R28.008 /api/patients is client-scoped")
 
 
+@pytest.mark.skip(reason="24h layer structure changed; see test_redesign_* smoke coverage (July 14 redesign)")
 def test_r28_009_pam_renders_through_library_with_24h_layer():
     """PAM Health ingests and renders through the library structure, and the
     rendered reports carry the 24h triage layer (banner/events/summary)."""
@@ -4157,6 +4178,7 @@ def test_a3_activity_chart_single_coverage_legend():
     print("PASS: A3 activity chart has a single coverage-tier legend")
 
 
+@pytest.mark.skip(reason="ECG/escalation action ladder removed; guidance now de-escalates by concern (July 14 redesign)")
 def test_b2_actions_escalate_by_severity_tier():
     """B2: the suggested action must change with the value tier (Elevated vs High
     vs Very-High HR; Low vs Very-Low HR) — no two adjacent tiers may share text."""
@@ -4213,6 +4235,7 @@ def _pam_narrative_actions(patient, days=30):
     return nd, actions
 
 
+@pytest.mark.skip(reason="separate suggested-actions block removed from the report (July 14 redesign)")
 def test_fu1_every_present_condition_retains_its_action():
     """Fix 1: a flat count cap must never drop a present condition's guidance.
     On the S (Chair) anchor case (Elevated HR, Elevated Breathing, High HR, Low HR),
@@ -4278,6 +4301,387 @@ def test_fu2_quiet_patient_no_pointer_no_appendix():
     assert not nd.get("episode_table_rows", []), \
         "quiet patient must have no episode rows (no appendix, no pointer)"
     print("PASS: FU.2 quiet patient has no appendix and no pointer")
+
+
+# =====================================================================
+# Redesign acceptance checks (July 14) — regulatory language + six levels
+# =====================================================================
+
+import re as _re
+from pathlib import Path as _Path
+
+# Whole-word banned tokens: an FDA reviewer pattern-matches these for a
+# measurement-only, 510k-exempt device. Any one in a rendered report undoes the
+# framing, so the test fails loudly on both cohorts.
+_BANNED_WORDS = [
+    "alert", "warning", "abnormal", "risk", "detect", "predict",
+    "urgent", "flagged",
+    # July 14 client review: the words "clinical" and "intelligence" may not
+    # appear anywhere in the report (it is just a "TREND REPORT").
+    "clinical", "intelligence",
+]
+# Substring bans: procedures, medications, and the retired level labels.
+_BANNED_SUBSTRINGS = [
+    "ecg", "beta blocker", "av node", "av-node", "fluid overload",
+    "early warning", "life saving", "life-saving", "provider review",
+    "very low heart rate", "elevated heart rate", "very high breathing",
+    "priority grade", "burden",
+]
+
+_REPO_ROOT = _Path(__file__).resolve().parent.parent.parent.parent
+_COHORT_DIRS = [
+    _REPO_ROOT / "Reports" / "pam_health_r28",
+    _REPO_ROOT / "Reports" / "medhab",
+]
+
+
+def _rendered_report_pdfs():
+    pdfs = []
+    for d in _COHORT_DIRS:
+        if d.exists():
+            pdfs += [p for p in sorted(d.glob("*.pdf"))
+                     if not p.name.startswith("BatchSummary")]
+    return pdfs
+
+
+def _pdf_text_of(path):
+    import fitz
+    doc = fitz.open(path)
+    try:
+        return "".join(pg.get_text() for pg in doc)
+    finally:
+        doc.close()
+
+
+def test_redesign_window_comment_pure_function():
+    """The per-window comment is chosen by ONE generic rule set from the window's
+    own measured attributes — no patient name, id, cohort, or per-patient branch.
+    The same input shape always yields the same comment, so the rule is identical
+    across every patient and both cohorts. Verified against the rule directly so a
+    rule that only looks right on one patient fails here instead of shipping."""
+    import inspect
+    from backend.narrative_ai import _window_comment
+    from backend.config import RENDER_CONFIG, settings
+    cg = RENDER_CONFIG["clinical_guidance"]
+
+    def w(pt, desc, score, both=False, cov=False):
+        return {"phase_type": pt, "duration_descriptor": desc,
+                "severity_score": score, "both_channels": both, "reduced_coverage": cov}
+
+    # The per-event cause-note exception was RETIRED (July 14) — no directive
+    # cause line appears on any event, even sustained / high-severity ones. The
+    # ladder is now exactly the four generic context rules.
+    assert "review_phrase_by_phase_type" not in cg, "cause strings must be retired from config"
+    # Rule order for every window (sustained or brief, any severity):
+    assert _window_comment(w("high_hr", "sustained", 99, both=True, cov=True), 5) == cg["window_both_channels_note"]
+    assert _window_comment(w("high_hr", "sustained", 99, cov=True), 1) == cg["window_reduced_coverage_note"]
+    # Recurrence only fires at a genuinely notable count (>= the config minimum);
+    # a small count is not filler-flagged.
+    min_n = cg["window_similar_min_count"]
+    assert _window_comment(w("high_hr", "sustained", 99), min_n) == cg["window_similar_note"].format(n=min_n)
+    assert _window_comment(w("high_hr", "sustained", 99), min_n - 1) == ""
+    assert _window_comment(w("high_hr", "brief", 1), 1) == ""
+    # Determinism: identical inputs → identical output (no hidden/global state).
+    assert _window_comment(w("low_rr", "brief", 2), 4) == _window_comment(w("low_rr", "brief", 2), 4)
+    # The signature admits only the window row + same-condition count — no place
+    # for patient identity to enter.
+    assert list(inspect.signature(_window_comment).parameters) == ["row", "same_condition_count"]
+    print("PASS: per-window comment is a pure function of measured data")
+
+
+def test_redesign_no_low_value_filler_line():
+    """The retired fixed low-value line ("No new action; continue routine
+    monitoring") must not appear in any rendered report on either cohort."""
+    pdfs = _rendered_report_pdfs()
+    assert pdfs, "Regenerate both cohorts before running this test."
+    offenders = [p.name for p in pdfs if "no new action" in _pdf_text_of(p).lower()]
+    assert not offenders, f"retired low-value filler line still present in: {offenders}"
+    print(f"PASS: no low-value filler line across {len(pdfs)} reports")
+
+
+def test_l24_nonzero_count_is_accompanied_by_event_lines():
+    """The Last 24 Hours box must never announce a nonzero episodic-event count
+    without describing the events. For every report, within the box region, if a
+    section states "<N> episodic event(s)" (N > 0) there must be at least one
+    event-detail line (an em-dash narrative line). Guards the announce-without-
+    describe regression that dropped the event lines during a layout change."""
+    import fitz
+    pdfs = _rendered_report_pdfs()
+    assert pdfs, "Regenerate both cohorts before running this test."
+    num_word = r"(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d+)"
+    announce = _re.compile(num_word + r"\s+measured windows?\b", _re.I)
+    offenders = []
+    for p in pdfs:
+        doc = fitz.open(p)
+        try:
+            t = doc[0].get_text()
+        finally:
+            doc.close()
+        if "Last 24 Hours" not in t:
+            continue
+        region = t.split("Last 24 Hours", 1)[1]
+        # The box ends at the period status heading ("... Episodic events from
+        # <dates>"), or the "Measured windows" section for a quiet patient.
+        for stop in ("Episodic events from", "Measured windows"):
+            if stop in region:
+                region = region.split(stop, 1)[0]
+                break
+        # A nonzero announcement ("no episodic events" never matches num_word).
+        if announce.search(region) and "—" not in region:
+            offenders.append(p.name)
+    assert not offenders, (
+        f"Last 24 Hours box announces events without listing them in: {offenders}")
+    print(f"PASS: L24 announce-implies-describe holds across {len(pdfs)} reports")
+
+
+def test_redesign_no_cause_line_or_suggested_review():
+    """The per-event cause lines and the Suggested review section were removed
+    (July 14). No rendered report may contain either."""
+    pdfs = _rendered_report_pdfs()
+    assert pdfs, "Regenerate both cohorts before running this test."
+    banned_bits = [
+        "assess for arrhythmia",
+        "check spo2 and lung sounds",
+        "suggested clinical review",
+        "suggested review",
+    ]
+    offenders = {}
+    for p in pdfs:
+        t = _pdf_text_of(p).lower()
+        hits = [b for b in banned_bits if b in t]
+        if hits:
+            offenders[p.name] = hits
+    assert not offenders, f"cause line / suggested review still present: {offenders}"
+    print(f"PASS: no cause line or suggested review across {len(pdfs)} reports")
+
+
+def test_redesign_no_banned_language_both_cohorts():
+    """No rendered per-patient report on either cohort may contain banned
+    regulatory language (procedures, medications, alert/predictive words) or a
+    retired condition-level label. Guards the 510k-exempt measurement framing."""
+    pdfs = _rendered_report_pdfs()
+    assert pdfs, ("No rendered reports found under Reports/pam_health_r28 or "
+                  "Reports/medhab; regenerate both cohorts before running this.")
+    offenders = {}
+    for p in pdfs:
+        t = _pdf_text_of(p).lower()
+        hits = [w for w in _BANNED_WORDS if _re.search(r"\b" + _re.escape(w) + r"\b", t)]
+        hits += [s for s in _BANNED_SUBSTRINGS if s in t]
+        if hits:
+            offenders[p.name] = sorted(set(hits))
+    assert not offenders, f"Banned language in rendered reports: {offenders}"
+    print(f"PASS: redesign banned-language scan clean across {len(pdfs)} reports")
+
+
+def test_redesign_chart_text_no_banned_language():
+    """Chart text obeys the same banned-language rule as the body. Charts are
+    rasterized (their labels are not PDF-extractable), so this scans the string
+    literals of exactly the chart functions that render on the report: the page-2
+    daily trend, distribution, and coverage charts, plus the page-1 measured
+    windows band. Titles, axis labels, legends, and annotations must be clean."""
+    import inspect
+    from backend import charts
+    fns = [
+        charts._generate_generic_candlestick,   # page-2 daily trend
+        charts._generate_generic_histogram,     # page-2 distributions
+        charts.generate_activity_trend_chart,   # page-2 daily coverage
+        charts.chart_episode_timeline_for_pdf,  # page-1 measured windows band
+    ]
+    offenders = {}
+    for fn in fns:
+        src = inspect.getsource(fn)
+        # Only quoted string literals become chart-visible text or labels.
+        literals = " ".join(_re.findall(r'"[^"]*"|\'[^\']*\'', src)).lower()
+        hits = [w for w in _BANNED_WORDS if _re.search(r"\b" + _re.escape(w) + r"\b", literals)]
+        hits += [s for s in _BANNED_SUBSTRINGS if s in literals]
+        if hits:
+            offenders[fn.__name__] = sorted(set(hits))
+    assert not offenders, f"Banned language in chart text: {offenders}"
+    print("PASS: redesign chart-text banned-language scan clean")
+
+
+def test_redesign_no_hyphens_in_output():
+    """Plain language, no hyphens: no rendered report may contain a hyphenated
+    compound word (letter-hyphen-letter) in its text."""
+    pdfs = _rendered_report_pdfs()
+    assert pdfs, "Regenerate both cohorts before running this test."
+    offenders = {}
+    for p in pdfs:
+        hy = sorted(set(_re.findall(r"[A-Za-z]{2,}-[A-Za-z]{2,}", _pdf_text_of(p))))
+        if hy:
+            offenders[p.name] = hy
+    assert not offenders, f"Hyphenated words in rendered reports: {offenders}"
+    print(f"PASS: redesign no-hyphen scan clean across {len(pdfs)} reports")
+
+
+def test_redesign_six_condition_levels():
+    """Exactly six conditions map through the pipeline; no retired level
+    (very_low_hr, elevated_hr, very_high_rr) is a target of any live map, and
+    every detected condition maps to one of the six phase types."""
+    from backend.config import (CONDITION_TO_PHASE_TYPE, CONDITION_DISPLAY,
+                                 THRESHOLD_LEGEND_COLORS)
+    six = {"low_hr", "high_hr", "very_high_hr", "low_rr", "elevated_rr", "high_rr"}
+    retired = {"very_low_hr", "elevated_hr", "very_high_rr"}
+    assert set(CONDITION_TO_PHASE_TYPE.values()) == six, \
+        f"CONDITION_TO_PHASE_TYPE must map to the six levels, got {set(CONDITION_TO_PHASE_TYPE.values())}"
+    assert set(THRESHOLD_LEGEND_COLORS.keys()) == six, \
+        "the threshold legend must show exactly the six levels"
+    assert not (set(CONDITION_TO_PHASE_TYPE.values()) & retired), "a retired level is still a map target"
+    assert len(CONDITION_DISPLAY) == 6, "CONDITION_DISPLAY must have six entries"
+    # No retired display label may be produced.
+    bad = {"Very Low Heart Rate", "Elevated Heart Rate", "Very High Breathing"}
+    assert not (set(CONDITION_DISPLAY.values()) & bad), "a retired display label survives"
+    print("PASS: redesign six-condition mapping")
+
+
+def test_redesign_thresholds():
+    """Config thresholds match the redesign: HR low<45, high>95, very high>110;
+    breathing low<10, elevated>24, high>40."""
+    from backend.config import settings
+    assert settings.brady_hr_avg == 45.0
+    assert settings.tachy_hr_avg == 95.0
+    assert settings.very_high_hr_avg == 110.0
+    assert settings.low_rr_avg == 10.0
+    assert settings.tachy_rr_avg == 24.0
+    assert settings.high_rr_avg == 40.0
+    print("PASS: redesign thresholds")
+
+
+def test_redesign_vital_range_before_average():
+    """Vital summary renders range first, average de-emphasized in brackets:
+    the '<min> to <max> (avg <n>)' shape, not average first."""
+    pdfs = _rendered_report_pdfs()
+    assert pdfs, "Regenerate both cohorts before running this test."
+    # At least one report must show the range-before-average pattern (the Spread
+    # box reads "<min> to <max> (avg: <n>) <unit>").
+    pattern = _re.compile(r"\d+\s+to\s+\d+\s*\(avg:?\s+\d+\)")
+    found = any(pattern.search(_pdf_text_of(p)) for p in pdfs)
+    assert found, "no report rendered the 'min to max (avg: n)' vital format"
+    print("PASS: redesign vital range-before-average format")
+
+
+def test_redesign_two_pages_no_appendix():
+    """Every report is exactly two pages — page 1 the summary, page 2 the graphs
+    with the thresholds legend at the bottom. The full-episode appendix stays
+    removed and there is no third page."""
+    import fitz
+    pdfs = _rendered_report_pdfs()
+    assert pdfs, "Regenerate both cohorts before running this test."
+    wrong, appendix = [], []
+    for p in pdfs:
+        doc = fitz.open(p)
+        try:
+            if doc.page_count != 2:
+                wrong.append((p.name, doc.page_count))
+            t = "".join(pg.get_text() for pg in doc).lower()
+            if "appendix" in t or "full episode record" in t:
+                appendix.append(p.name)
+        finally:
+            doc.close()
+    assert not appendix, f"appendix content in: {appendix}"
+    assert not wrong, f"reports not exactly two pages: {wrong}"
+    print(f"PASS: two pages, no appendix across {len(pdfs)} reports")
+
+
+# =====================================================================
+# R29 redesign — per-day plot + Notable Days panel
+# =====================================================================
+
+def test_r29_per_day_series_reconciles_to_window_count():
+    """The per-day episodic series must sum to the number of measured windows in
+    the period (the stat-tile / caption count). Each in-window window is counted
+    exactly once; out-of-window windows are excluded. Fails on any divergence."""
+    from backend.charts import compute_events_per_day
+    from backend.config import Conditions
+
+    class _E:
+        def __init__(self, st, cond):
+            self.start_time, self.condition = st, cond
+
+    eps = [
+        _E("2024-01-01T05:00:00", Conditions.TACHYCARDIA),   # HR, day 1
+        _E("2024-01-03T05:00:00", Conditions.TACHYPNEA),     # BR, day 3
+        _E("2024-01-03T09:00:00", Conditions.TACHYCARDIA),   # HR, day 3
+        _E("2024-01-10T05:00:00", Conditions.HIGH_RR),       # BR, day 10
+    ]
+    agg = compute_events_per_day(eps, "2024-01-01", "2024-01-10")
+    assert sum(agg["hr"]) + sum(agg["rr"]) == len(eps)
+    assert sum(agg["hr"]) == 2 and sum(agg["rr"]) == 2
+    assert {n for n, _ in agg["cooccur"]} == {3}          # day 3 has both channels
+    # A window outside the period must not be counted.
+    agg2 = compute_events_per_day(eps + [_E("2024-02-01T05:00:00", Conditions.TACHYCARDIA)],
+                                  "2024-01-01", "2024-01-10")
+    assert sum(agg2["hr"]) + sum(agg2["rr"]) == len(eps)
+    print("PASS: R29 per-day series reconciles to window count")
+
+
+def test_r29_notable_days_rules():
+    """Notable Days selection: co-occurrence days ranked by that day's total
+    hours, then the busiest day fills a remaining slot; ≤3; never padded; empty
+    input → []; language is banned-word safe."""
+    from backend.notable_days import compute_notable_days
+
+    def phrase(r):
+        return f"{r['category']} ({r['duration_descriptor']}, {r['total_hours']}h, peak {r['max']})"
+
+    def row(day, pt, cat, dur, sev, cov=False):
+        return {"start_time": f"2024-01-{day:02d}T05:00:00", "phase_type": pt,
+                "category": cat, "duration_descriptor": "brief", "total_hours": dur,
+                "severity_score": sev, "max": "120", "min": "40", "reduced_coverage": cov}
+
+    rows = [
+        row(1, "high_hr", "High HR", 2, 5), row(1, "elevated_rr", "Elevated Breathing", 3, 4),  # co-occ, 5h
+        row(3, "high_hr", "High HR", 1, 3), row(3, "elevated_rr", "Elevated Breathing", 1, 2),  # co-occ, 2h
+        row(5, "elevated_rr", "Elevated Breathing", 1, 1),
+        row(5, "elevated_rr", "Elevated Breathing", 1, 1),
+        row(5, "elevated_rr", "Elevated Breathing", 1, 1),  # busiest (3 windows, no HR)
+    ]
+    out = compute_notable_days(rows, "2024-01-01", "2024-01-31", phrase)
+    assert len(out) == 3
+    assert "day 1" in out[0]["when"] and "both vitals" in out[0]["what"]   # longest co-occ first
+    assert "day 3" in out[1]["when"]
+    assert "day 5" in out[2]["when"] and "busiest" in out[2]["what"]       # busiest fills slot
+    assert compute_notable_days([], "2024-01-01", "2024-01-31", phrase) == []
+
+    # ≤3 even with 4 co-occurrence days; busiest never appears once 3 co-occ exist.
+    many = []
+    for d, h in ((1, 5), (2, 4), (3, 3), (4, 2)):
+        many += [row(d, "high_hr", "High HR", h, 5), row(d, "elevated_rr", "Elevated Breathing", 1, 1)]
+    out_many = compute_notable_days(many, "2024-01-01", "2024-01-31", phrase)
+    assert len(out_many) == 3 and all("both vitals" in e["what"] for e in out_many)
+
+    _banned = ("alert", "warning", "abnormal", "risk", "detect", "predict",
+               "urgent", "flagged", "clinical", "intelligence")
+    for e in out + out_many:
+        t = (e["when"] + " " + e["what"]).lower()
+        assert not any(re.search(r"\b" + w + r"\b", t) for w in _banned), e
+    print("PASS: R29 Notable Days rules")
+
+
+def test_r29_no_hardcoded_mockup_values_in_source():
+    """The recreated template/rule code must bind every patient value to data —
+    none of RSanchez's mockup literals may be typed into the render modules."""
+    mods = ["backend/pdf_render.py", "backend/charts.py", "backend/notable_days.py"]
+    # RSanchez-specific VALUES from the wireframe; any survivor is a data slot
+    # left hardcoded. (The patient NAME leaking onto other patients is caught at
+    # the PDF level — the quiet-patient render + a post-regeneration cross-patient
+    # sweep; generic numbers like 40/31 by the reconcile + quiet-patient checks.)
+    literals = [
+        "82.9", "71.5", "605/730", "522/730",
+        "peak 120", "peak 110", "peak 54",
+        "Sep 24", "Sep 25", "Oct 07", "Oct 08",
+        "both vitals outside range the same day on days 8",
+        "start of a 10-day Elevated Breathing period", "busiest day — 5 windows",
+    ]
+    code_root = _Path(__file__).resolve().parent.parent.parent  # Code/
+    survivors = {}
+    for m in mods:
+        txt = (code_root / m).read_text(encoding="utf-8")
+        hits = [lit for lit in literals if lit in txt]
+        if hits:
+            survivors[m] = hits
+    assert not survivors, f"hardcoded mockup literal(s) survived: {survivors}"
+    print("PASS: R29 no hardcoded mockup values in source")
 
 
 # =====================================================================
@@ -4445,7 +4849,7 @@ if __name__ == "__main__":
         test_r24_013_30day_trajectory_branch_present,
         # Round 25 — phase strip / candlestick width parity
         test_r25_strip_and_chart_share_width_symbol,
-        test_r25_phase_strip_width_matches_candlestick,
+        test_page2_daily_trend_present,
         # MedHab CSV cohort invariants
         test_mh_001_csv_ingest_schema_identical_to_excel,
         test_mh_002_cnt_present_and_numeric_every_file,

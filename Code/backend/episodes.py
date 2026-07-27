@@ -18,14 +18,12 @@ def _severity_score(condition: str, hours: int, coupled: bool, low_conf: bool) -
     Weights from settings, multiplied by duration, plus bonuses/penalties.
     """
     weights = {
-        Conditions.SEVERE_BRADY: settings.base_severe_brady,
         Conditions.BRADYCARDIAC: settings.base_low_hr,
-        Conditions.ELEVATED_HR: settings.base_elevated_hr,
         Conditions.TACHYCARDIA: settings.base_high_hr,
         Conditions.VERY_HIGH_HR: settings.base_very_high_hr,
+        Conditions.LOW_RR: settings.base_low_rr,
         Conditions.TACHYPNEA: settings.base_elevated_rr,
         Conditions.HIGH_RR: settings.base_high_rr,
-        Conditions.VERY_HIGH_RR: settings.base_very_high_rr,
     }
     base = weights.get(condition, 1)
     
@@ -91,33 +89,31 @@ def detect_episodes(df: pd.DataFrame) -> list[Episode]:
             "_rr_n":   1 if pd.notna(row["rr_avg"]) else 0,
         })
 
-    # Stage 1: Hourly Violation Detection
+    # Stage 1: Hourly Violation Detection (redesign: six conditions total).
+    # Heart rate → Low (< 45), High (> 95), Very High (> 110).
+    # Breathing  → Low (< 10), Elevated (> 24), High (> 40).
     for _, row in df.iterrows():
-        # Severe Bradycardia: HR < 40 bpm
-        if row["hr_avg"] < settings.severe_brady_min:
-            _add_raw(Conditions.SEVERE_BRADY, row)
-        # Bradycardia: HR < 45 bpm
-        elif row["hr_avg"] < settings.brady_hr_avg:
+        # Low Heart Rate: HR < 45 bpm
+        if row["hr_avg"] < settings.brady_hr_avg:
             _add_raw(Conditions.BRADYCARDIAC, row)
 
-        # Very High HR: HR > 110 bpm (check first, more severe)
+        # Very High Heart Rate: HR > 110 bpm (check first, more severe)
         if row["hr_avg"] > settings.very_high_hr_avg:
             _add_raw(Conditions.VERY_HIGH_HR, row)
-        # Tachycardia: HR > 100 bpm
+        # High Heart Rate: HR > 95 bpm
         elif row["hr_avg"] > settings.tachy_hr_avg:
             _add_raw(Conditions.TACHYCARDIA, row)
-        # Elevated HR: HR > 80 bpm (lower severity)
-        elif row["hr_avg"] > settings.elevated_hr_avg:
-            _add_raw(Conditions.ELEVATED_HR, row)
 
-        # R15 A2: Three-tier RR detection — Very High > High > Elevated
-        # Very High RR: > 40 brpm (Medicare threshold, check first — most severe)
-        if row["rr_avg"] > settings.very_high_rr_avg:
-            _add_raw(Conditions.VERY_HIGH_RR, row)
-        # High RR: > 30 brpm
-        elif row["rr_avg"] > settings.high_rr_avg:
+        # Low Breathing: RR < 10 brpm, but only a physiologically plausible
+        # reading (>= floor). Values below the floor are artifact/missing
+        # (the noise filter stores 0), not genuine low breathing.
+        if settings.rr_physiologic_floor <= row["rr_avg"] < settings.low_rr_avg:
+            _add_raw(Conditions.LOW_RR, row)
+
+        # High Breathing: RR > 40 brpm (check first, more severe)
+        if row["rr_avg"] > settings.high_rr_avg:
             _add_raw(Conditions.HIGH_RR, row)
-        # Elevated breathing (Tachypnea): > 24 brpm
+        # Elevated Breathing (Tachypnea): RR > 24 brpm
         elif row["rr_avg"] > settings.tachy_rr_avg:
             _add_raw(Conditions.TACHYPNEA, row)
 

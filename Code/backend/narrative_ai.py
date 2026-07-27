@@ -197,11 +197,38 @@ def _first_condition_episode(episodes, phase_type):
 
 
 def _row_comment(phase_type: str) -> str:
-    """Per-finding Comment: the condition-keyed clinical-focus phrase, single-
-    sourced from clinical_guidance.review_phrase_by_phase_type (identical for
-    every row of the same condition; data-shape-agnostic, not per-patient)."""
-    return RENDER_CONFIG.get("clinical_guidance", {}).get(
-        "review_phrase_by_phase_type", {}).get(phase_type, "")
+    """Retired: the per-condition cause phrase was removed (client review,
+    July 14). Kept as a no-op so legacy callers do not break; returns "" always."""
+    return ""
+
+
+def _window_comment(row: dict, same_condition_count: int) -> str:
+    """Per-window comment, chosen PURELY from the window's own measured
+    attributes — no patient name, id, cohort, or per-patient branch. Says only
+    what the label and numbers do not already show; a window with no qualifying
+    context returns "" (blank), which is correct.
+
+    Four generic rules, evaluated in order (the higher-concern cause-note branch
+    was retired July 14, so no directive cause line appears on any event):
+      1. Heart rate and breathing both outside range in the same window.
+      2. Else the window falls in a reduced monitoring coverage period.
+      3. Else the same-condition window count is at or above the recurrence
+         minimum (config): the recurrence line.
+      4. Else no comment.
+    All strings live in config so wording is a one-place edit.
+    """
+    cg = RENDER_CONFIG.get("clinical_guidance", {})
+
+    if row.get("both_channels"):
+        return cg.get("window_both_channels_note", "")
+    if row.get("reduced_coverage"):
+        return cg.get("window_reduced_coverage_note", "")
+    # Recurrence: only when the count is genuinely notable (a real recurring
+    # pattern), not "one other window". same_condition_count is passed as 0 for
+    # the 24h snapshot so this branch never fires there.
+    if same_condition_count >= cg.get("window_similar_min_count", 5):
+        return cg.get("window_similar_note", "").format(n=same_condition_count)
+    return ""
 
 
 # ── A2: single-source HR P5–P95 spread formatter ─────────────────────────────
@@ -256,7 +283,8 @@ def _low_coverage_dates(activity_trend) -> set:
 
 
 
-def build_episode_table_rows(episodes, hr_stats, rr_stats, activity_trend=None):
+def build_episode_table_rows(episodes, hr_stats, rr_stats, activity_trend=None,
+                             enable_recurrence=True):
     """A1: one row per DETECTED episode for the Major Findings and Last-24h
     episodic-events tables. Time Span and Duration are both sourced from the SAME
     episode object, so they always agree — unlike the prior per-condition rollup,
@@ -300,11 +328,6 @@ def build_episode_table_rows(episodes, hr_stats, rr_stats, activity_trend=None):
                 return f"{cv:.0f}{'*' if clip else ''} {unit}"
             return f"{v:.0f} {unit}"
 
-        comment = _row_comment(pt)
-        # B3 — flag (don't inline) the reduced-coverage caveat: the renderer marks
-        # the row and prints the full caveat once as a table footnote, so every
-        # affected comment cell stays compact (inlining the sentence ballooned
-        # cells to ~4 lines and pushed dense reports to a third page).
         overlaps_low = False
         if low_cov:
             end = start + pd.Timedelta(hours=dur)
@@ -324,10 +347,63 @@ def build_episode_table_rows(episodes, hr_stats, rr_stats, activity_trend=None):
             "average": _fmt(avg_v),
             "min": _fmt(mn_v),
             "max": _fmt(mx_v),
-            "comment": comment,
+            "comment": "",  # assigned below, once same-condition counts are known
             "severity_score": int(getattr(ep, "severity_score", 0) or 0),
             "cooccurrence": bool(getattr(ep, "cooccurrence", False)),
         })
+
+    # Both-channels flag: does this window's own time span overlap ANY window of
+    # the OTHER family (heart rate vs breathing)? Computed here from the windows'
+    # displayed spans (start .. start + hours) so it matches what the reader sees,
+    # independent of the detection coupling flag (which needs >= 2h of timestamp
+    # overlap and also feeds triage — left untouched). This is what makes rule 1
+    # ("both outside range in this window") fire on a genuine overlap.
+    def _span(r):
+        s = pd.Timestamp(r["start_time"])
+        return s, s + pd.Timedelta(hours=max(1, int(r.get("total_hours", 1) or 1)))
+    for r in rows:
+        r_is_hr = r["phase_type"] in _HR_PHASE_TYPES
+        s1, e1 = _span(r)
+        both = False
+        for o in rows:
+            if o is r:
+                continue
+            if (o["phase_type"] in _HR_PHASE_TYPES) == r_is_hr:
+                continue  # same family
+            s2, e2 = _span(o)
+            if max(s1, s2) < min(e1, e2):
+                both = True
+                break
+        r["both_channels"] = both
+
+    # Per-window comment: a pure function of each window's own measured
+    # attributes (plus the count of same-condition windows this period). No
+    # patient identity enters here — the same input shape always yields the same
+    # comment, on every patient and both cohorts.
+    same_condition_count: dict = {}
+    for r in rows:
+        same_condition_count[r["phase_type"]] = same_condition_count.get(r["phase_type"], 0) + 1
+    for r in rows:
+        # The recurrence rule is a PERIOD-level signal; the 24h snapshot passes
+        # enable_recurrence=False so a 24h count is never labeled "this period".
+        n = same_condition_count[r["phase_type"]] if enable_recurrence else 0
+        r["comment"] = _window_comment(r, n)
+
+    # The recurrence line earns its place once per condition, not stacked on every
+    # window. Keep it on the single highest-severity window of each condition and
+    # blank it on the rest (those windows had no other applicable comment, since
+    # recurrence is the last rule in the ladder).
+    rec_note_stub = RENDER_CONFIG.get("clinical_guidance", {}).get("window_similar_note", "")
+    rec_prefix = rec_note_stub.split("{", 1)[0].strip()
+    if rec_prefix:
+        by_cond: dict = {}
+        for r in rows:
+            if r["comment"].startswith(rec_prefix):
+                by_cond.setdefault(r["phase_type"], []).append(r)
+        for pt, rs in by_cond.items():
+            rs.sort(key=lambda r: -(r.get("severity_score", 0) or 0))
+            for r in rs[1:]:
+                r["comment"] = ""
     return rows
 
 
@@ -347,23 +423,8 @@ def _phase_description(p_type, label, date_range, ph_hr, p_eps, hr_stats, rr_sta
         coupled = sum(1 for e in p_eps if e.cooccurrence)
         txt = f"{label} ({date_range}): Average {ph_hr:.0f} bpm, minimum {min_hr:.0f} bpm"
         if coupled:
-            txt += ", with concurrent elevated breathing"
+            txt += ", with concurrent breathing changes"
         return txt + "."
-
-    elif p_type == 'very_low_hr':
-        hr_mins = _extract_vitals(p_eps, 'Min HR')
-        min_hr = min(hr_mins) if hr_mins else hr_stats.min
-        coupled = sum(1 for e in p_eps if e.cooccurrence)
-        txt = f"{label} ({date_range}): Average {ph_hr:.0f} bpm, minimum {min_hr:.0f} bpm"
-        if coupled:
-            txt += ", with concurrent elevated breathing"
-        return txt + ". Immediate review suggested."
-
-    elif p_type == 'elevated_hr':
-        hr_maxs = _extract_vitals(p_eps, 'hr_max') or _extract_vitals(p_eps, 'Max')
-        max_hr = max(hr_maxs) if hr_maxs else (hr_stats.max if hr_stats else 0)
-        total_h = sum(e.duration_hours for e in p_eps)
-        return f"{label} ({date_range}): Average {ph_hr:.0f} bpm, peak {max_hr:.0f} bpm, sustained {total_h} hours."
 
     elif p_type == 'high_hr':
         hr_maxs = _extract_vitals(p_eps, 'hr_max') or _extract_vitals(p_eps, 'Max')
@@ -373,16 +434,18 @@ def _phase_description(p_type, label, date_range, ph_hr, p_eps, hr_stats, rr_sta
     elif p_type == 'very_high_hr':
         hr_maxs = _extract_vitals(p_eps, 'hr_max') or _extract_vitals(p_eps, 'Max')
         max_hr = max(hr_maxs) if hr_maxs else (hr_stats.max if hr_stats else 0)
-        return f"{label} ({date_range}): Average {ph_hr:.0f} bpm, peak {max_hr:.0f} bpm. Immediate review suggested."
+        return f"{label} ({date_range}): Average {ph_hr:.0f} bpm, peak {max_hr:.0f} bpm. Review recommended."
 
-    elif p_type in ('elevated_rr', 'high_rr', 'very_high_rr'):
-        # R15 A2: Three RR tiers share rendering — qualifier comes from the type label.
-        # R22.B: RR upper-bound clipping reversed; show the actual peak so any
-        # residual data-quality issue stays visible to the clinician.
+    elif p_type == 'low_rr':
+        rr_mins = _extract_vitals(p_eps, 'Min RR') or _extract_vitals(p_eps, 'RR')
+        min_rr = min(rr_mins) if rr_mins else (rr_stats.min if rr_stats else 0)
+        return f"{label} ({date_range}): Average breathing rate {ph_hr:.0f} breaths/min, minimum {min_rr:.0f} breaths/min."
+
+    elif p_type in ('elevated_rr', 'high_rr'):
+        # Breathing tiers share rendering — the qualifier comes from the label.
         rr_maxs = _extract_vitals(p_eps, 'Max RR') or _extract_vitals(p_eps, 'RR')
         max_rr = max(rr_maxs) if rr_maxs else (rr_stats.max if rr_stats else 0)
-        suffix = ". Immediate review suggested." if p_type == 'very_high_rr' else "."
-        return f"{label} ({date_range}): Average breathing rate {ph_hr:.0f} bpm, peak {max_rr:.0f} breaths/min{suffix}"
+        return f"{label} ({date_range}): Average breathing rate {ph_hr:.0f} breaths/min, peak {max_rr:.0f} breaths/min."
 
     else:
         return None
@@ -390,8 +453,8 @@ def _phase_description(p_type, label, date_range, ph_hr, p_eps, hr_stats, rr_sta
 
 # ── Episode Reconciliation (FIX 33) ─────────────────────────────────────────
 
-_HR_PHASE_TYPES = {'low_hr', 'very_low_hr', 'elevated_hr', 'high_hr', 'very_high_hr'}
-_RR_PHASE_TYPES = {'elevated_rr', 'high_rr', 'very_high_rr'}
+_HR_PHASE_TYPES = {'low_hr', 'high_hr', 'very_high_hr'}
+_RR_PHASE_TYPES = {'low_rr', 'elevated_rr', 'high_rr'}
 
 # CONDITION_TO_PHASE_TYPE moved to config.py in R16 J3 so the batch summary
 # comment-template lookup can share the same mapping. Reconcile_counts uses it
@@ -508,6 +571,7 @@ def generate_deterministic_narrative(
     bed_summary=None,
     activity_trend=None,
     positional_stats=None,
+    period_scoped: bool = True,
 ) -> tuple[dict, list[str]]:
     """Build narrative as a structured dict.
 
@@ -584,8 +648,8 @@ def generate_deterministic_narrative(
         # FIX 33: Use reconciled episode lists — single source of truth
         p_eps = counts['phase_episodes'][idx]
 
-        is_hr_phase = p.get('type') in ('low_hr', 'very_low_hr', 'elevated_hr', 'high_hr', 'very_high_hr')
-        is_rr_phase = p.get('type') in ('elevated_rr', 'high_rr', 'very_high_rr')
+        is_hr_phase = p.get('type') in _HR_PHASE_TYPES
+        is_rr_phase = p.get('type') in _RR_PHASE_TYPES
 
         ph_hr = p.get('hr_avg', 0)
         ph_rr = p.get('rr_avg', 0)
@@ -727,11 +791,13 @@ def generate_deterministic_narrative(
             continue
         b_total_hours = sum(e.duration_hours for e in brief_eps)
         b_longest = max((e.duration_hours for e in brief_eps), default=0)
+        is_rr = pt in _RR_PHASE_TYPES
         is_low = 'low' in pt
-        is_rr = pt in ('elevated_rr', 'high_rr', 'very_high_rr')
         # Condition-matched structured min/max/avg (brief_eps are all the same
-        # condition, so the channel is pure); emit all three.
-        if is_low or not is_rr:
+        # condition, so the channel is pure); emit all three. Channel is chosen
+        # by metric family (HR vs breathing), not by is_low — Low Breathing is a
+        # breathing condition and must read the RR fields.
+        if not is_rr:
             mn = _epi_minmax(brief_eps, pt, 'min_hr', min)
             mx = _epi_minmax(brief_eps, pt, 'max_hr', max)
             mn = mn if mn is not None else hr_stats.min
@@ -752,7 +818,7 @@ def generate_deterministic_narrative(
             mx = mx if mx is not None else rr_stats.max
             b_min = f"{mn:.0f} brpm"
             b_max = f"{mx:.0f} brpm"
-            b_peak = b_max
+            b_peak = b_min if is_low else b_max   # Low Breathing → the minimum is the notable value
             rr_avgs = [e.avg_rr for e in brief_eps if e.avg_rr is not None]
             avg_val = sum(rr_avgs) / len(rr_avgs) if rr_avgs else rr_stats.mean
             b_avg = f"{avg_val:.0f} brpm"
@@ -901,7 +967,8 @@ def generate_deterministic_narrative(
     # feeds the burden rollup, headline, actions, strip numbering, and batch
     # summary). Only the Major Findings and Last-24h tables consume this list.
     episode_table_rows = build_episode_table_rows(
-        episodes, hr_stats, rr_stats, activity_trend=activity_trend
+        episodes, hr_stats, rr_stats, activity_trend=activity_trend,
+        enable_recurrence=period_scoped,
     )
 
     narrative_dict = {
@@ -1026,9 +1093,8 @@ def _build_phase_actions(
         if len(disp) >= 2:
             hr_spread = hr_stats.p95 - hr_stats.p5
             optional_actions.append(
-                f"Overall trajectory shows {len(disp)} unstable phases with "
-                f"{hr_spread:.0f} bpm variability. Consider increasing monitoring "
-                "frequency and lowering escalation threshold."
+                f"Measured windows span {len(disp)} pattern segments with "
+                f"{hr_spread:.0f} bpm heart rate variability; interpret in context."
             )
 
     # ── Bed-specific actions (OPTIONAL) ──
@@ -1079,9 +1145,8 @@ def _build_phase_actions(
     # Fallback if no condition/optional actions at all.
     if not condition_actions and not optional_actions:
         if episodes:
-            return ["If event frequency or duration is increasing over days: consider earlier "
-                    "provider notification, even without overt symptoms."]
-        return ["No specific clinical actions indicated; continue routine monitoring per protocol."]
+            return ["No new action; continue routine monitoring."]
+        return ["No new action; continue routine monitoring."]
 
     # Condition floor is untrimmable; optional items fill the remaining budget.
     # If the floor alone exceeds max_actions, keep the whole floor anyway.
@@ -1458,7 +1523,7 @@ def build_specific_action_posture(eps, phases, triage, counts, trajectory=None):
     canonical_eps = _canonical_display_episodes(counts, eps)
 
     if triage_str == 'GREEN' or not canonical_eps:
-        return "Routine monitoring. No specific intervention indicated."
+        return RENDER_CONFIG["clinical_guidance"]["mixed_templates"]["GREEN"]
 
     cg = RENDER_CONFIG["clinical_guidance"]
     dominance_threshold = cg.get("dominance_threshold", 0.60)
@@ -1514,94 +1579,28 @@ def build_specific_action_posture(eps, phases, triage, counts, trajectory=None):
         for e in canonical_eps
     )
 
-    if triage_str == 'RED':
-        if has_very_low_sustained and coupled_count > 0:
-            return (
-                f"Urgent: Sustained very low heart rate with concurrent breathing "
-                f"abnormality across {coupled_count} episode(s). "
-                f"Total episodic burden: {total_episode_hours}h. "
-                f"Immediate provider review and medication reconciliation advised."
-            )
-        elif has_very_low_sustained:
-            return (
-                f"Urgent: Persistent very low heart rate pattern with "
-                f"{longest_episode.duration_hours}h longest sustained event. "
-                f"Total episodic burden: {total_episode_hours}h across {total_episodes} events. "
-                f"Provider review and medication assessment advised."
-            )
-        elif has_sustained_high_hr and has_sustained_breathing:
-            return (
-                f"Urgent: Concurrent sustained elevated heart rate and breathing. "
-                f"Total episodic burden: {total_episode_hours}h. "
-                f"Evaluate for infection, fluid overload, or respiratory compromise. "
-                f"Provider review advised."
-            )
-        elif has_sustained_low_hr:
-            return (
-                f"Urgent: Recurrent sustained low heart rate pattern "
-                f"({total_episodes} episodes, {total_episode_hours}h total). "
-                f"Provider review, medication reconciliation, and symptom assessment advised."
-            )
-        elif has_sustained_high_hr:
-            return (
-                f"Urgent: Sustained elevated heart rate pattern "
-                f"({total_episodes} episodes, {total_episode_hours}h total). "
-                f"Assess for infection, pain, hydration, cardiac workup advised."
-            )
-        else:
-            return (
-                f"Urgent: High episodic burden detected "
-                f"({total_episodes} events, {total_episode_hours}h). "
-                f"Provider review advised within 24 hours."
-            )
-    
-    if triage_str == 'YELLOW':
-        if has_very_low_sustained and coupled_count > 0:
-            return (
-                f"Sustained very low heart rate with concurrent breathing abnormality "
-                f"({coupled_count} coupled episode(s)). "
-                f"Suggest provider review within 24 hours and medication assessment."
-            )
-        elif has_very_low_sustained:
-            return (
-                f"Sustained very low heart rate detected ({longest_episode.duration_hours}h duration). "
-                f"Review heart rate lowering medications and consider provider consultation."
-            )
-        elif has_sustained_low_hr and coupled_count > 0:
-            return (
-                f"Recurrent low heart rate episodes with concurrent breathing changes. "
-                f"Closer observation and medication review suggested."
-            )
-        elif has_sustained_low_hr:
-            return (
-                f"Recurrent low heart rate episodes ({total_episodes} events). "
-                f"Review medication timing and assess patient symptoms."
-            )
-        elif has_sustained_high_hr and has_sustained_breathing:
-            return (
-                f"Concurrent elevated heart rate and breathing pattern. "
-                f"Evaluate for infection, fluid status, or respiratory compromise."
-            )
-        elif has_sustained_high_hr:
-            return (
-                f"Sustained elevated heart rate ({longest_episode.duration_hours}h duration). "
-                f"Assess for pain, infection, hydration, or activity correlation."
-            )
-        elif has_sustained_breathing:
-            return (
-                f"Sustained elevated breathing pattern. "
-                f"Assess respiratory status and consider underlying cause."
-            )
-        # YELLOW FALLBACK — Round 10 Fix 6: run through specificity gate
-        fallback = (
-            f"Episodic events detected ({total_episodes} events, {int(total_episode_hours)}h total). "
-            f"Closer clinical observation suggested."
-        )
-        return _validate_guidance(fallback, eps, counts)
+    # Regulatory-safe posture (redesign, July 14). Measurement framing only: the
+    # report describes measured windows outside the stated ranges and a generic
+    # possible-cause assessment. No procedures, medications, predictions, or
+    # alert wording. Exact strings live in RENDER_CONFIG["clinical_guidance"].
+    cg = RENDER_CONFIG["clinical_guidance"]
+    review_lines = cg["CLINICAL_GUIDANCE_LINES"]
+    focus = cg["assessment_focus_by_condition"].get(dominant_cond, "")
 
-    # Should never reach here — all triage levels handled above
+    if triage_str in ('RED', 'YELLOW'):
+        review_line = review_lines["RED"] if triage_str == 'RED' else review_lines["YELLOW"]
+        parts = [
+            f"{dominant_cond}: {total_episodes} measurement windows outside the "
+            f"stated ranges over {int(total_episode_hours)}h."
+        ]
+        if focus:
+            parts.append(f"Assess {focus}; interpret in context.")
+        parts.append(review_line)
+        return _validate_guidance(" ".join(parts), eps, counts)
+
+    # GREEN / any other — routine.
     return _validate_guidance(
-        f"Episodic events detected. Clinical review suggested ({total_episodes} events).",
+        f"{total_episodes} measurement windows recorded. {review_lines['GREEN']}",
         eps, counts
     )
 
@@ -1659,7 +1658,9 @@ _SYSTEM_PROMPT = (
     "- Use plain language ONLY and STRICTLY avoid clinical diagnostic terminology. "
     "Say 'low heart rate' internally. Say 'high heart rate' internally. "
     "Say 'elevated breathing rate' directly. "
-    "No 'rhythm instability' (say 'heart rate variability'). No 'cardiorespiratory coupling' (say 'concurrent low heart rate and elevated breathing rate'). No 'burden' or 'arrhythmia'.\n"
+    "No 'rhythm instability' (say 'heart rate variability'). No 'cardiorespiratory coupling' (say 'concurrent low heart rate and elevated breathing rate'). No 'burden'. "
+    "Never present alerts, predictions, diagnoses, procedures (such as ECG), or medications (such as beta blockers). "
+    "You may name generic possible causes only, framed as 'assess for arrhythmia, fever, pain, or infection'.\n"
     "- NEVER use the word 'warranted'. Use 'suggested' or 'is suggested' instead.\n"
     "- NEVER recommend specific diagnostic tests, procedures, medications, or treatment changes. "
     "Use language like 'further evaluation is suggested' or 'may benefit from additional clinical assessment' instead of naming specific tests.\n"
@@ -1819,6 +1820,7 @@ async def generate_llm_narrative(
             phases=phases,
             bed_summary=bed_summary,
             positional_stats=positional_stats,
+            period_scoped=period_scoped,
         )
         # Flatten dict to string for LLM fallback path
         flat = _flatten_narrative_dict(narrative_dict)
@@ -1861,6 +1863,7 @@ async def generate_narrative(
     bed_summary=None,
     activity_trend=None,
     positional_stats=None,
+    period_scoped: bool = True,
 ) -> tuple[str | dict, list[str], str]:
     """Generate narrative using LLM or deterministic fallback.
     
@@ -1893,5 +1896,6 @@ async def generate_narrative(
         bed_summary=bed_summary,
         activity_trend=activity_trend,
         positional_stats=positional_stats,
+        period_scoped=period_scoped,
     )
     return narrative_dict, actions, "Rule-based phrase taxonomy"

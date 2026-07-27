@@ -61,6 +61,7 @@ async def compute_24h_layer(patient_id: str, df) -> Optional[dict]:
             patient_id, ws, we, hr24, rr24, dq24,
             eps24, rollups24, triage24, trend24, posture24,
             use_llm_override=False, quality_warnings=[], phases=raw_phases24,
+            period_scoped=False,   # 24h snapshot: never label a 24h count "this period"
         )
         if isinstance(narr24, dict):
             # A1 — the Last-24h episodic-events table is per-episode too, ranked

@@ -22,6 +22,10 @@ from .config import (
     ASTERISK_LEGEND_Y_AXES_DAILY, ASTERISK_LEGEND_Y_AXES_WEEKLY,
     LEGEND_BOTTOM_AXES_FRACTION, BADGE_LEGEND_CLEARANCE_PT,
 )
+from .config import (
+    HR_LOW_COLOR, HR_HIGH_COLOR, HR_VERY_HIGH_COLOR,
+    RR_LOW_COLOR, RR_ELEVATED_COLOR, RR_HIGH_COLOR, NORMAL_COLOR,
+)
 
 
 def place_hour_labels_with_stagger(ax, label_specs):
@@ -447,7 +451,7 @@ def chart_candlestick_weekly(dly, eps, phases, window_start, window_end):
     # longer date strings rotate further below the chart frame than the daily path.
     ax2.text(
         0.0, ASTERISK_LEGEND_Y_AXES_WEEKLY,
-        '* indicates concurrent HR and breathing abnormality',
+        '* indicates concurrent heart rate and breathing',
         transform=ax2.transAxes,
         ha='left', va='top',
         fontsize=5, style='italic', color='#666666',
@@ -656,7 +660,7 @@ def chart_candlestick_weekly(dly, eps, phases, window_start, window_end):
     # longer date strings rotate further below the chart frame than the daily path.
     ax2.text(
         0.0, ASTERISK_LEGEND_Y_AXES_WEEKLY,
-        '* indicates concurrent HR and breathing abnormality',
+        '* indicates concurrent heart rate and breathing',
         transform=ax2.transAxes,
         ha='left', va='top',
         fontsize=5, style='italic', color='#666666',
@@ -873,7 +877,7 @@ def _generate_generic_candlestick(daily: pd.DataFrame, ep_days: set,
         # clipped by the axes bounding box.
         ax_rr.text(
             0.0, ASTERISK_LEGEND_Y_AXES_DAILY,
-            '* indicates concurrent HR and breathing abnormality',
+            '* indicates concurrent heart rate and breathing',
             transform=ax_rr.transAxes,
             ha='left', va='top',
             fontsize=5, style='italic', color='#666666',
@@ -895,11 +899,12 @@ def _generate_generic_candlestick(daily: pd.DataFrame, ep_days: set,
         Line2D([0], [0], color='#C0392B', linewidth=1, linestyle='--', label=f'Elevated breathing (> {settings.tachy_rr_avg})'),
     ]
     # R18 A: legend below the RR subplot (was overlaid 'upper right' inside the
-    # plot, blocking breathing-range bars per Sajol May 4 review). Anchored
-    # below the x-axis labels so it doesn't compete with data.
+    # plot, blocking breathing-range bars per Sajol May 4 review). R29 polish —
+    # dropped to -0.40 so the bordered legend box sits clearly BELOW the rotated
+    # date labels instead of overlapping them (design-doc separation).
     ax_rr.legend(
         handles=rr_legend_elements,
-        loc='upper center', bbox_to_anchor=(0.5, -0.22),
+        loc='upper center', bbox_to_anchor=(0.5, -0.40),
         fontsize=settings.chart_legend_fontsize, frameon=True,
         framealpha=0.92, edgecolor='#CCCCCC', ncol=3,
     )
@@ -1322,7 +1327,7 @@ def generate_bed_hours_chart(
     ]
     if alerts_df is not None and not alerts_df.empty:
         legend_elements.append(
-            Line2D([0], [0], marker="v", color="#ef4444", lw=0, markersize=6, label="Low HR alert")
+            Line2D([0], [0], marker="v", color="#ef4444", lw=0, markersize=6, label="Low heart rate window")
         )
     ax1.legend(handles=legend_elements, loc="upper right", fontsize=6,
                framealpha=0.9, edgecolor="#e5e7eb")
@@ -1397,51 +1402,53 @@ def generate_activity_trend_chart_for_pdf(df: pd.DataFrame) -> bytes:
 # ── FIX 6: Episode Timeline Bar ─────────────────────────────────────────────
 
 def chart_episode_timeline_for_pdf(episodes, start_date, end_date) -> bytes:
-    """Simple horizontal timeline with colored bars for episodic events.
-    
-    Gray background bar spanning full period, colored bars for each episode.
-    Returns PNG bytes for PDF embedding.
-    """
-    fig, ax = plt.subplots(figsize=(7.5, 0.45))
+    """Measured windows band across the monitoring period (redesign, July 14).
 
-    total_days = (end_date - start_date).days + 1
+    A light gray track spans the whole period. Each measured window (a stretch
+    where heart rate or breathing was outside the stated ranges) is drawn at its
+    ACTUAL time. Heart rate windows use the red family and sit on the upper
+    track; breathing windows use the blue family on the lower track, so a
+    concurrent heart rate + breathing window shows both colors. Shade follows
+    severity (darker = more severe) via the shared PHASE_COLORS. Returns PNG
+    bytes for PDF embedding.
+    """
+    from .config import CONDITION_TO_PHASE_TYPE, PHASE_COLORS, NORMAL_COLOR
+    _HR_PHASES = {"low_hr", "high_hr", "very_high_hr"}
+
+    fig, ax = plt.subplots(figsize=(7.5, 0.6))
+
+    start_ts = pd.Timestamp(start_date)
+    total_days = (pd.Timestamp(end_date) - start_ts).days + 1
     if total_days < 1:
         total_days = 1
 
-    # Gray background bar
-    ax.barh(0, total_days, height=0.5, color='#E8E8E8', edgecolor='none')
+    # Two light background tracks: heart rate (upper), breathing (lower).
+    hr_y, rr_y, track_h = 0.14, -0.14, 0.20
+    ax.barh(hr_y, total_days, height=track_h, color='#EFEFF1', edgecolor='none')
+    ax.barh(rr_y, total_days, height=track_h, color='#EFEFF1', edgecolor='none')
 
-    # Colored bars for each episode
     for ep in episodes:
         try:
             if hasattr(ep, 'start_time'):
                 ep_start = pd.Timestamp(ep.start_time)
-                ep_end = pd.Timestamp(ep.end_time)
                 hours = ep.duration_hours
                 condition = ep.condition
             else:
                 ep_start = pd.Timestamp(ep['start_time'])
-                ep_end = pd.Timestamp(ep['end_time'])
                 hours = ep.get('duration_hours', 1)
                 condition = ep.get('condition', '')
 
-            day_offset = (ep_start.normalize() - pd.Timestamp(start_date)).days
-            day_width = max(hours / 24.0, 0.15)
+            ptype = CONDITION_TO_PHASE_TYPE.get(condition, 'normal')
+            color = PHASE_COLORS.get(ptype, NORMAL_COLOR)
+            is_hr = ptype in _HR_PHASES
+            y = hr_y if is_hr else rr_y
 
-            # Color by severity
-            if 'Severe' in condition or 'Very' in condition:
-                color = '#991B1B'   # dark red
-            elif condition in ('High HR', 'Low HR'):
-                color = '#EF4444'   # red
-            elif condition == 'Elevated HR':
-                color = '#F59E0B'   # amber
-            elif condition == 'Elevated Breathing':
-                color = '#E67E22'   # orange
-            else:
-                color = '#6B7280'   # gray
+            # Actual event time → fractional-day offset (intraday precision).
+            day_offset = (ep_start - start_ts).total_seconds() / 86400.0
+            day_width = max(hours / 24.0, 0.18)
 
-            ax.barh(0, day_width, left=max(0, day_offset), height=0.5,
-                    color=color, edgecolor='white', linewidth=0.3, alpha=0.85)
+            ax.barh(y, day_width, left=max(0, day_offset), height=track_h,
+                    color=color, edgecolor='white', linewidth=0.3)
         except Exception:
             continue
 
@@ -1451,19 +1458,173 @@ def chart_episode_timeline_for_pdf(episodes, start_date, end_date) -> bytes:
         tick_positions = list(range(0, total_days, max(1, total_days // 7)))
     else:
         tick_positions = list(range(0, total_days, max(1, total_days // 10)))
-    tick_labels = [(pd.Timestamp(start_date) + pd.Timedelta(days=d)).strftime('%b %d')
+    tick_labels = [(start_ts + pd.Timedelta(days=d)).strftime('%b %d')
                    for d in tick_positions]
     ax.set_xticks(tick_positions)
-    ax.set_xticklabels(tick_labels, fontsize=5.5, rotation=45, ha='right')
+    ax.set_xticklabels(tick_labels, fontsize=5.5, color='#555555')
 
-    ax.set_yticks([])
-    ax.set_ylim(-0.35, 0.35)
+    # Family labels on the y axis so a reader knows which track is which.
+    ax.set_yticks([hr_y, rr_y])
+    ax.set_yticklabels(['Heart rate', 'Breathing'], fontsize=5.5, color='#555555')
+    ax.tick_params(length=0)
+    ax.set_ylim(-0.32, 0.32)
     for spine in ax.spines.values():
         spine.set_visible(False)
 
     buf = io.BytesIO()
     fig.savefig(buf, format='png', dpi=settings.chart_dpi,
                 bbox_inches='tight', facecolor='white', pad_inches=0.02)
+    plt.close(fig)
+    buf.seek(0)
+    return buf.read()
+
+
+# ── Episodic events per day (R29 redesign, universal page-1 region) ──────────
+# Counts each measured window (episode) into its day-of-period bucket and splits
+# the stack by channel — heart rate (red) vs breathing (blue) — using the SAME
+# condition→phase-type mapping as the measured-windows timeline, so the two agree.
+
+_EPD_HR_PHASES = {"low_hr", "high_hr", "very_high_hr"}
+
+
+def compute_events_per_day(episodes, window_start, window_end) -> dict:
+    """Aggregate episodes into per-day HR/breathing counts over the period.
+
+    Returns a dict with 1-indexed ``days`` (1..N), parallel ``hr`` / ``rr``
+    count arrays, the period ``start`` timestamp, and ``cooccur`` — the list of
+    (day_number, date) where BOTH a heart-rate and a breathing window occurred,
+    used for the chart caption. Robust to episode objects or dicts."""
+    from .config import CONDITION_TO_PHASE_TYPE
+
+    start_ts = pd.Timestamp(window_start).normalize()
+    total_days = (pd.Timestamp(window_end).normalize() - start_ts).days + 1
+    if total_days < 1:
+        total_days = 1
+
+    hr = [0] * total_days
+    rr = [0] * total_days
+    for ep in episodes or []:
+        try:
+            if hasattr(ep, 'start_time'):
+                ep_start, condition = ep.start_time, ep.condition
+            else:
+                ep_start, condition = ep['start_time'], ep.get('condition', '')
+            day_idx = (pd.Timestamp(ep_start).normalize() - start_ts).days
+            if day_idx < 0 or day_idx >= total_days:
+                continue
+            ptype = CONDITION_TO_PHASE_TYPE.get(condition, 'normal')
+            if ptype in _EPD_HR_PHASES:
+                hr[day_idx] += 1
+            else:
+                rr[day_idx] += 1
+        except Exception:
+            continue
+
+    cooccur = [(i + 1, (start_ts + pd.Timedelta(days=i)).strftime('%b %d'))
+               for i in range(total_days) if hr[i] > 0 and rr[i] > 0]
+    return {"days": list(range(1, total_days + 1)), "hr": hr, "rr": rr,
+            "start": start_ts, "total_days": total_days, "cooccur": cooccur}
+
+
+def _epd_cell_color(base_hex: str, n: int):
+    """Heatmap-strip cell fill for a per-day count. 0 → white (empty); higher
+    counts ramp toward the full family color (mirrors the design's
+    color-mix(base min(40+15n,100)% , white))."""
+    import matplotlib.colors as _mc
+    if n <= 0:
+        return "#ffffff"
+    frac = min(0.40 + 0.15 * n, 1.0)
+    r, g, b = _mc.to_rgb(base_hex)
+    return (r * frac + (1 - frac), g * frac + (1 - frac), b * frac + (1 - frac))
+
+
+def generate_events_per_day_chart_for_pdf(episodes, window_start, window_end,
+                                          patient_id: str = "",
+                                          compact: bool = True,
+                                          cooccur_days=None,
+                                          fig_width_in: float = 7.5,
+                                          fig_height_in: float = 1.5) -> bytes:
+    """Episodic-events-per-day chart (redesign, R29). One stacked bar per day of
+    the monitoring period — breathing (blue) beneath heart rate (red) — with an
+    accent dot above each co-occurrence day and a two-row HR/BR heatmap strip
+    beneath the axis (per-day squares, intensity by count). Date ticks and bar
+    width scale with the period length (readable at ~7, ~31 or ~90 days); the
+    section header carries the title/legend, so the plot itself has none.
+
+    Reads the report's own per-day series (bed+chair merged, never per-sensor)
+    via ``compute_events_per_day``. Returns PNG bytes embedded 1:1 (no squash).
+    ``cooccur_days`` may pin the dotted days; defaults to the series' own."""
+    from matplotlib.patches import Rectangle
+    from .config import EPD_ACCENT_COLOR
+
+    agg = compute_events_per_day(episodes, window_start, window_end)
+    hr, rr = agg["hr"], agg["rr"]
+    start_ts, total_days = agg["start"], agg["total_days"]
+    if cooccur_days is None:
+        cooccur_days = {n for n, _ in agg["cooccur"]}
+    else:
+        cooccur_days = set(cooccur_days)
+
+    # Bars sit at x = day-0.5 over xlim (0, N); strip cell d spans (d-1, d) so a
+    # bar and its HR/BR cells share the same column center.
+    bar_x = [d - 0.5 for d in agg["days"]]
+    ymax = max(1, max((hr[i] + rr[i]) for i in range(total_days)))
+
+    fig = plt.figure(figsize=(fig_width_in, fig_height_in))
+    gs = fig.add_gridspec(2, 1, height_ratios=[3.15, 1.0], hspace=0.62)
+    ax = fig.add_subplot(gs[0])
+    axs = fig.add_subplot(gs[1])
+
+    # ── bars ────────────────────────────────────────────────────────────────
+    ax.bar(bar_x, rr, width=0.82, color=RR_ELEVATED_COLOR, edgecolor='white',
+           linewidth=0.3, zorder=3)
+    ax.bar(bar_x, hr, width=0.82, bottom=rr, color=HR_HIGH_COLOR, edgecolor='white',
+           linewidth=0.3, zorder=3)
+    # accent dot above each co-occurrence day
+    for d in cooccur_days:
+        if 1 <= d <= total_days:
+            ax.plot(d - 0.5, hr[d - 1] + rr[d - 1] + ymax * 0.11, marker='o',
+                    markersize=2.6, color=EPD_ACCENT_COLOR, zorder=5,
+                    markeredgecolor='none')
+
+    ax.set_xlim(0, total_days)
+    ax.set_ylim(0, ymax + max(0.9, ymax * 0.16))
+    ax.set_yticks(range(0, ymax + 1))
+    ax.tick_params(axis='y', labelsize=6, colors='#555555', length=0)
+
+    step = max(1, round(total_days / 7))
+    xt = list(range(1, total_days + 1, step))
+    ax.set_xticks([d - 0.5 for d in xt])
+    ax.set_xticklabels([(start_ts + pd.Timedelta(days=d - 1)).strftime('%b %d')
+                        for d in xt], fontsize=6, color='#555555')
+    ax.tick_params(axis='x', length=0)
+    ax.grid(axis='y', color='#E6E6E9', linewidth=0.5, zorder=0)
+    ax.set_axisbelow(True)
+    for s in ('top', 'right', 'left'):
+        ax.spines[s].set_visible(False)
+    ax.spines['bottom'].set_color('#CCCCCC')
+
+    # ── HR / BR heatmap strip ─────────────────────────────────────────────────
+    for i in range(total_days):
+        axs.add_patch(Rectangle((i, 1), 1, 1, facecolor=_epd_cell_color(HR_HIGH_COLOR, hr[i]),
+                                edgecolor='#E4E7F5', linewidth=0.3))
+        axs.add_patch(Rectangle((i, 0), 1, 1, facecolor=_epd_cell_color(RR_ELEVATED_COLOR, rr[i]),
+                                edgecolor='#E4E7F5', linewidth=0.3))
+    axs.set_xlim(0, total_days)
+    axs.set_ylim(0, 2)
+    axs.set_xticks([])
+    axs.set_yticks([1.5, 0.5])
+    axs.set_yticklabels(['HR', 'BR'], fontsize=6)
+    for lbl, col in zip(axs.get_yticklabels(), (HR_HIGH_COLOR, RR_ELEVATED_COLOR)):
+        lbl.set_color(col)
+    axs.tick_params(length=0)
+    for spine in axs.spines.values():
+        spine.set_visible(False)
+
+    # Figure box == on-page display box (no tight-bbox trim) → embeds 1:1.
+    fig.subplots_adjust(left=0.045, right=0.997, top=0.97, bottom=0.02)
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=settings.chart_dpi, facecolor='white')
     plt.close(fig)
     buf.seek(0)
     return buf.read()

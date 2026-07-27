@@ -182,7 +182,7 @@ class ReportResponse(BaseModel):
     report_date: str
     data_resolution: str       # REQUIRED — computed by signal_engine.compute_data_resolution()
     coverage_summary: str = "" # NEW: e.g. "122/168h, 72.6%"
-    disclaimer: str = "Decision-support summary derived from longitudinal vital sign trends; interpret in clinical context."
+    disclaimer: str = "Measurement data only. Not a diagnosis. Values reflect selected windows where heart rate or breathing was outside the stated ranges, from radar based vital sign measurement."
 
     hr_summaries: Optional[VitalStats] = None
     rr_summaries: Optional[VitalStats] = None
