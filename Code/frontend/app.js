@@ -26,24 +26,19 @@ const STATS_LABELS = {
 
 // ── DOM Elements ────────────────────────────────────────────────────────────
 
-const $clientSelect  = document.getElementById("client-select");
-const $patientSelect = document.getElementById("patient-select");
-const $rangeSelect   = document.getElementById("range-select");
-const $startDate     = document.getElementById("start-date");
-const $endDate       = document.getElementById("end-date");
-const $customRange   = document.getElementById("custom-range");
-const $customRangeEnd = document.getElementById("custom-range-end");
-const $btnGenerate   = document.getElementById("btn-generate");
-const $btnSmartWeek  = document.getElementById("btn-smart-week");
-const $btnSummary    = document.getElementById("btn-summary");
-const $btnSummaryDownload = document.getElementById("btn-summary-download");
-const $btnDownload   = document.getElementById("btn-download");
-const $btnExportJson = document.getElementById("btn-export-json");
+// ── DOM Elements ────────────────────────────────────────────────────────────
+
 const $loading       = document.getElementById("loading-overlay");
 const $reportContainer = document.getElementById("report-container");
 const $summaryContainer = document.getElementById("summary-container");
 const $emptyState    = document.getElementById("empty-state");
 const $aiToggle      = document.getElementById("ai-toggle");
+const $btnSummary    = document.getElementById("btn-summary");
+const $btnSummaryDownload = document.getElementById("btn-summary-download");
+const $btnSummaryBack = document.getElementById("btn-summary-back");
+const $btnDownload   = document.getElementById("btn-download");
+const $btnExportJson = document.getElementById("btn-export-json");
+const $btnSmartWeek  = document.getElementById("btn-smart-week");
 
 // Status chip colors for the 24h library summary (match the PDF).
 const SUMMARY_STATUS_FILL = {
@@ -54,273 +49,19 @@ const SUMMARY_STATUS_FILL = {
 
 // ── State ───────────────────────────────────────────────────────────────────
 
+let currentClient = null;
 let currentReport = null;
-let currentPdfUrl = null;  // object URL for the inline PDF preview (revoked on regen)
 let patientMeta = {};  // Cache: { patientId: { locations, date_range, total_hours } }
-let currentClient = null;  // selected library id, e.g. "medhab" / "pam_health"
 
-// The default rolling-range options (used for Excel libraries that report over
-// ranges rather than months). Captured once so loadMonths() can restore them
-// when switching to a range-based library.
-const DEFAULT_RANGE_OPTIONS_HTML = $rangeSelect ? $rangeSelect.innerHTML : "";
-
-// ── Init ────────────────────────────────────────────────────────────────────
-
-async function init() {
-    try {
-        // Discover libraries (clients), then load the first one's patients.
-        const cres = await fetch(`${API_BASE}/api/clients`);
-        if (!cres.ok) throw new Error("Failed to load libraries");
-        const cdata = await cres.json();
-        const clients = cdata.clients || [];
-
-        $clientSelect.innerHTML = "";
-        if (clients.length === 0) {
-            $clientSelect.innerHTML = '<option value="">No libraries</option>';
-        } else {
-            clients.forEach((c) => {
-                const opt = document.createElement("option");
-                opt.value = c.id;
-                opt.textContent = c.label;
-                $clientSelect.appendChild(opt);
-            });
-            currentClient = clients[0].id;
-        }
-        $clientSelect.addEventListener("change", onClientChange);
-
-        $patientSelect.addEventListener("change", onPatientChange);
-        await loadPatients();
-    } catch (err) {
-        console.error("Init error:", err);
-        $patientSelect.innerHTML = '<option value="">Error loading patients</option>';
-    }
+// Summary back button
+if ($btnSummaryBack) {
+    $btnSummaryBack.addEventListener("click", () => {
+        if ($summaryContainer) $summaryContainer.style.display = "none";
+        if ($reportContainer) $reportContainer.style.display = "block";
+    });
 }
-
-/**
- * Load the patient list for the currently-selected library and repopulate the
- * patient dropdown. A patient from one library never appears under another —
- * the list is scoped server-side by ?client=.
- */
-async function loadPatients() {
-    // Show an explicit loading state so the dropdown never appears frozen on a
-    // cold/slow load (e.g. the first PAM Excel scan, or a future larger
-    // cohort). Disable the controls until the scoped list is in, so a patient
-    // from the previous library can't be picked mid-swap.
-    $patientSelect.innerHTML = '<option value="">Loading…</option>';
-    $patientSelect.disabled = true;
-    $clientSelect.disabled = true;
-    $btnGenerate.disabled = true;
-    $btnSmartWeek.disabled = true;
-    try {
-        const url = currentClient
-            ? `${API_BASE}/api/patients?client=${encodeURIComponent(currentClient)}`
-            : `${API_BASE}/api/patients`;
-        const res = await fetch(url);
-        if (!res.ok) throw new Error("Failed to load patients");
-        const data = await res.json();
-        if (data.client) currentClient = data.client;
-
-        patientMeta = {};  // metadata cache is per-library
-        $patientSelect.innerHTML = "";
-        if (!data.patients || data.patients.length === 0) {
-            $patientSelect.innerHTML = '<option value="">No patients found</option>';
-            return;
-        }
-
-        data.patients.forEach((pid) => {
-            const opt = document.createElement("option");
-            opt.value = pid;
-            opt.textContent = pid;
-            $patientSelect.appendChild(opt);
-        });
-
-        $btnGenerate.disabled = false;
-        $btnSmartWeek.disabled = false;
-        if ($btnSummary) $btnSummary.disabled = false;  // library loaded → summary available
-
-        // Populate the Time Window dropdown for this library (data-driven).
-        await loadMonths();
-
-        // Auto-load metadata for the first patient
-        await onPatientChange();
-    } catch (err) {
-        console.error("loadPatients error:", err);
-        $patientSelect.innerHTML = '<option value="">Error loading patients</option>';
-    } finally {
-        // Re-enable the controls regardless of outcome.
-        $patientSelect.disabled = false;
-        $clientSelect.disabled = false;
-    }
-}
-
-/** Switch library: reload the scoped patient list (and its windows). */
-async function onClientChange() {
-    currentClient = $clientSelect.value || null;
-    await loadPatients();
-}
-
-/**
- * Load available report months for the current library and populate the Time
- * Window dropdown. CSV-shape libraries (MedHab) report by month; Excel-shape
- * libraries (PAM Health) have no months, so we restore the rolling-range
- * options instead.
- */
-async function loadMonths() {
-    try {
-        const url = currentClient
-            ? `${API_BASE}/api/months?client=${encodeURIComponent(currentClient)}`
-            : `${API_BASE}/api/months`;
-        const res = await fetch(url);
-        const data = res.ok ? await res.json() : { months: [] };
-        if (!data.months || data.months.length === 0) {
-            // Range-based library — restore the default rolling-window options.
-            $rangeSelect.innerHTML = DEFAULT_RANGE_OPTIONS_HTML;
-            return;
-        }
-        $rangeSelect.innerHTML = "";
-        data.months.forEach((m) => {
-            const opt = document.createElement("option");
-            opt.value = m.key;          // e.g. "2026-04"
-            opt.textContent = m.label;  // e.g. "April 2026"
-            $rangeSelect.appendChild(opt);
-        });
-        // Months are concrete windows — the custom-range inputs are not used here.
-        if ($customRange) $customRange.style.display = "none";
-        if ($customRangeEnd) $customRangeEnd.style.display = "none";
-    } catch (err) {
-        console.error("loadMonths error:", err);
-    }
-}
-
-/** True when a dropdown value is a month key like "2026-04". */
-function isMonthKey(v) {
-    return /^\d{4}-\d{2}$/.test(v);
-}
-
-/**
- * When the user selects a different patient, fetch their location metadata
- * and update the UI accordingly (location badge, date range hints).
- */
-async function onPatientChange() {
-    const pid = $patientSelect.value;
-    if (!pid) return;
-
-    // Remove previous location info
-    const existing = document.getElementById("location-info");
-    if (existing) existing.remove();
-
-    // Fetch metadata (cached)
-    if (!patientMeta[pid]) {
-        try {
-            const locUrl = `${API_BASE}/api/patients/${encodeURIComponent(pid)}/locations`
-                + (currentClient ? `?client=${encodeURIComponent(currentClient)}` : "");
-            const res = await fetch(locUrl);
-            if (res.ok) {
-                patientMeta[pid] = await res.json();
-            } else {
-                patientMeta[pid] = { locations: [], date_range: {} };
-            }
-        } catch {
-            patientMeta[pid] = { locations: [], date_range: {} };
-        }
-    }
-
-    const meta = patientMeta[pid];
-
-    // Show location info banner below the controls
-    const panel = document.querySelector(".controls-inner");
-    if (panel && meta.locations.length > 0) {
-        const info = document.createElement("div");
-        info.id = "location-info";
-        info.className = "location-info";
-
-        const locBadges = meta.locations.map(loc => {
-            const icon = loc === "Chair" ? "🪑" : loc === "Bed" ? "🛏️" : loc === "Living Room" ? "🏠" : "📍";
-            return `<span class="loc-badge">${icon} ${loc}</span>`;
-        }).join("");
-
-        const dateHint = meta.date_range?.start && meta.date_range?.end
-            ? `<span class="date-hint">Data: ${meta.date_range.start} to ${meta.date_range.end} (${meta.total_hours}h)</span>`
-            : "";
-
-        info.innerHTML = `<span class="loc-label">Available sensors:</span> ${locBadges} ${dateHint}`;
-        panel.appendChild(info);
-    }
-
-    // Pre-populate custom date inputs with patient's actual date range
-    if (meta.date_range?.start) {
-        $startDate.value = meta.date_range.start;
-        $startDate.min = meta.date_range.start;
-        $startDate.max = meta.date_range.end;
-    }
-    if (meta.date_range?.end) {
-        $endDate.value = meta.date_range.end;
-        $endDate.min = meta.date_range.start;
-        $endDate.max = meta.date_range.end;
-    }
-}
-
-// ── Event Listeners ─────────────────────────────────────────────────────────
-
-$rangeSelect.addEventListener("change", () => {
-    const isCustom = $rangeSelect.value === "custom";
-    $customRange.style.display = isCustom ? "flex" : "none";
-    $customRangeEnd.style.display = isCustom ? "flex" : "none";
-});
-
-$btnGenerate.addEventListener("click", generateReport);
-if ($btnSummary) $btnSummary.addEventListener("click", showLibrarySummary);
-if ($btnSummaryDownload) $btnSummaryDownload.addEventListener("click", downloadLibrarySummary);
-$btnSmartWeek.addEventListener("click", smartWeekDetect);
-$btnDownload.addEventListener("click", downloadPDF);
-$btnExportJson.addEventListener("click", exportJSON);
-
-// ── Most Critical Week ──────────────────────────────────────────────────────
-
-async function smartWeekDetect() {
-    const pid = $patientSelect.value;
-    if (!pid) return;
-
-    // Show loading state on the button
-    const origText = $btnSmartWeek.innerHTML;
-    $btnSmartWeek.innerHTML = `<span class="spinner-inline"></span> Scanning…`;
-    $btnSmartWeek.disabled = true;
-
-    try {
-        const res = await fetch(`${API_BASE}/api/patients/${encodeURIComponent(pid)}/interesting-week`);
-        if (!res.ok) {
-            const err = await res.json().catch(() => ({}));
-            alert(err.detail || "Could not find a critical week for this patient.");
-            return;
-        }
-
-        const data = await res.json();
-
-        // Switch to custom range and fill in the discovered dates
-        $rangeSelect.value = "custom";
-        $customRange.style.display = "flex";
-        $customRangeEnd.style.display = "flex";
-        $startDate.value = data.start;
-        $endDate.value = data.end;
-
-        // Show a score toast in the location-info area
-        const existing = document.getElementById("smart-week-toast");
-        if (existing) existing.remove();
-        const toast = document.createElement("div");
-        toast.id = "smart-week-toast";
-        toast.className = "smart-week-toast";
-        toast.innerHTML = `🔍 <strong>Most Critical Week detected:</strong> ${data.start} → ${data.end} (clinical score: ${data.score})`;
-        document.querySelector(".controls-inner")?.appendChild(toast);
-
-        // Auto-generate the report for the discovered window
-        await generateReport();
-    } catch (err) {
-        console.error("Smart week error:", err);
-        alert("Failed to scan for the most critical week.");
-    } finally {
-        $btnSmartWeek.innerHTML = origText;
-        $btnSmartWeek.disabled = false;
-    }
+if ($btnSummaryDownload) {
+    $btnSummaryDownload.addEventListener("click", downloadLibrarySummary);
 }
 
 // ── Generate Report ─────────────────────────────────────────────────────────
@@ -493,455 +234,376 @@ async function downloadLibrarySummary() {
     }
 }
 
-async function generateReport() {
-    const patientId = $patientSelect.value;
-    const rangeType = $rangeSelect.value;
-    const useAI     = $aiToggle.checked;
-    if (!patientId) return;
-    // Leaving the summary view — show the per-patient report instead.
-    if ($summaryContainer) $summaryContainer.style.display = "none";
 
-    const body = {
-        patient_id: patientId,
-        range_type: rangeType,
-        client: currentClient,
-        use_ai: useAI
-    };
-    if (isMonthKey(rangeType)) {
-        body.range_type = "month";
-        body.month = rangeType;
-    } else if (rangeType === "custom") {
-        body.start = $startDate.value || null;
-        body.end = $endDate.value || null;
-    }
-
-    showLoading(true);
-
-    try {
-        // Render the report NATIVELY in the app (HTML, with hover) — not an
-        // embedded PDF. Same report JSON drives the in-app view; Download PDF
-        // still produces the full PDF.
-        const res = await fetch(`${API_BASE}/api/report/preview`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-        });
-
-        if (!res.ok) {
-            const err = await res.json().catch(() => ({}));
-            throw new Error(err.detail || `HTTP ${res.status}`);
-        }
-
-        currentReport = await res.json();
-        renderReport(currentReport);
-
-        $btnDownload.disabled = false;
-        $btnExportJson.disabled = false;
-    } catch (err) {
-        alert("Error generating report: " + err.message);
-        console.error(err);
-    } finally {
-        showLoading(false);
-    }
-}
-
-// ── Download PDF ────────────────────────────────────────────────────────────
-
-async function downloadPDF() {
-    const patientId = $patientSelect.value;
-    const rangeType = $rangeSelect.value;
-    const useAI     = $aiToggle.checked;
-    if (!patientId) return;
-
-    const body = {
-        patient_id: patientId,
-        range_type: rangeType,
-        client: currentClient,
-        use_ai: useAI
-    };
-    if (isMonthKey(rangeType)) {
-        body.range_type = "month";
-        body.month = rangeType;
-    } else if (rangeType === "custom") {
-        body.start = $startDate.value || null;
-        body.end = $endDate.value || null;
-    }
-
-    showLoading(true);
-
-    try {
-        const res = await fetch(`${API_BASE}/api/report/pdf`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-        });
-
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-        // Use the server's filename (CardioReport_<patient>_<Month_Year>.pdf) so
-        // the download name has the patient + month, single-sourced.
-        let fname = `CardioReport_${patientId}.pdf`;
-        const cd = res.headers.get("Content-Disposition") || "";
-        const m = cd.match(/filename="?([^"]+)"?/);
-        if (m) fname = m[1];
-
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = fname;
-        document.body.appendChild(a);
-        a.click();
-        // Delay cleanup to prevent browsers from aborting the download
-        setTimeout(() => {
-            a.remove();
-            URL.revokeObjectURL(url);
-        }, 250);
-    } catch (err) {
-        alert("Error downloading PDF: " + err.message);
-    } finally {
-        showLoading(false);
-    }
-}
-
-// ── Export JSON ──────────────────────────────────────────────────────────────
-
-async function exportJSON() {
-    const patientId = $patientSelect.value;
-    const rangeType = $rangeSelect.value;
-    if (!patientId) return;
-
-    try {
-        let url = `${API_BASE}/api/report/events.json?patient_id=${encodeURIComponent(patientId)}&range_type=${rangeType}`;
-        if (rangeType === "custom") {
-            if ($startDate.value) url += `&start=${$startDate.value}`;
-            if ($endDate.value) url += `&end=${$endDate.value}`;
-        }
-
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-        const data = await res.json();
-        const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-        const blobUrl = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = blobUrl;
-        a.download = `CardioReport_events_${patientId}.json`;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(blobUrl);
-    } catch (err) {
-        alert("Error exporting JSON: " + err.message);
-    }
-}
 
 // ── Render Report ───────────────────────────────────────────────────────────
 
 function renderReport(r) {
-    $emptyState.style.display = "none";
-    $reportContainer.style.display = "block";
+    if ($emptyState) $emptyState.style.display = "none";
+    if ($reportContainer) $reportContainer.style.display = "block";
 
-    // Header — date formats matching PDF exactly
-    document.getElementById("meta-patient").innerHTML = `<strong>Patient ID:</strong> ${r.patient_id}`;
-    document.getElementById("meta-period").innerHTML = `<strong>Period:</strong> ${formatPeriod(r.window_start, r.window_end)}`;
-    document.getElementById("meta-date").innerHTML = `<strong>Report Date:</strong> ${formatDateLong(r.report_date)}`;
-    document.getElementById("meta-resolution").innerHTML = `<strong>Resolution:</strong> ${r.data_resolution}`;
-    document.getElementById("meta-coverage").innerHTML = `<strong>Coverage:</strong> ${r.coverage_summary || "—"}`;
-    
-    // AI Badge or Style (optional, visually indicates if LLM was used)
-    const $narrativeText = document.getElementById("narrative-text");
-    if (r.use_ai && r.narrative_source && r.narrative_source.includes("AI")) {
-        $narrativeText.classList.add("ai-powered");
-    } else {
-        $narrativeText.classList.remove("ai-powered");
-    }
-    // Narrative — handle structured dict (deterministic) or plain string (LLM)
-    if (r.narrative && typeof r.narrative === "object" && r.narrative.opening !== undefined) {
-        // Structured narrative: opening + phase_lines + closing. Append the
-        // tier-consistent priority grade so the summary line matches the PDF.
-        const grade = (r.report_priority || "").charAt(0) + (r.report_priority || "").slice(1).toLowerCase();
-        const gradeStr = grade ? `  <strong>Priority grade: ${escapeHtml(grade)}</strong>` : "";
-        let narrativeHtml = `<p>${escapeHtml(r.narrative.opening)}${gradeStr}</p>`;
-        if (r.narrative.phase_lines && r.narrative.phase_lines.length > 0) {
-            narrativeHtml += "<div style='margin: 4px 0 8px 16px; padding: 0;'>";
-            r.narrative.phase_lines.forEach(line => {
-                narrativeHtml += `<div style="margin-bottom: 4px;">${escapeHtml(line)}</div>`;
-            });
-            narrativeHtml += "</div>";
+    const setElHtml = (id, html) => { const el = document.getElementById(id); if (el) el.innerHTML = html; };
+    const setElText = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
+
+    // 1. Header Band & Metadata Bar
+    const badgeBox = document.getElementById("pdf-badge-box");
+    const badgeText = document.getElementById("triage-badge");
+    const triageUpper = (r.triage || "").toUpperCase();
+    if (badgeBox && badgeText) {
+        if (triageUpper === "RED" || triageUpper === "YELLOW") {
+            badgeText.textContent = "Review recommended";
+            badgeBox.className = `pdf-badge-box ${r.triage.toLowerCase()}`;
+        } else {
+            badgeText.textContent = "Routine monitoring";
+            badgeBox.className = "pdf-badge-box green";
         }
-        if (r.narrative.closing) {
-            narrativeHtml += `<p>${escapeHtml(r.narrative.closing)}</p>`;
-        }
-        $narrativeText.innerHTML = narrativeHtml;
+    }
+
+    setElHtml("meta-patient", `<strong>Patient ID:</strong> ${escapeHtml(r.patient_id)}`);
+    setElHtml("meta-period", `<strong>Period:</strong> ${escapeHtml(formatPeriod(r.window_start, r.window_end))}`);
+    setElHtml("meta-date", `<strong>Report Date:</strong> ${escapeHtml(formatDateLong(r.report_date))}`);
+    setElHtml("meta-coverage", `<strong>Coverage:</strong> ${escapeHtml(r.coverage_summary || "—")}`);
+
+    // 2. Action Posture / Why-Flagged Banner
+    const actionBanner = document.getElementById("pdf-action-banner");
+    const actionText = document.getElementById("action-banner-text");
+    let whySentence = "";
+    if (r.narrative && typeof r.narrative === "object" && r.narrative.opening) {
+        whySentence = r.narrative.opening;
+    } else if (typeof r.narrative === "string" && r.narrative.length > 0) {
+        whySentence = r.narrative;
+    }
+    if (whySentence && (triageUpper === "RED" || triageUpper === "YELLOW")) {
+        if (actionText) actionText.innerHTML = escapeHtml(whySentence);
+        if (actionBanner) actionBanner.style.display = "block";
     } else {
-        $narrativeText.textContent = (typeof r.narrative === "string" ? r.narrative : "") || "No narrative available.";
+        if (actionBanner) actionBanner.style.display = "none";
     }
 
-    // Narrative source label at the bottom of Section 1 (Hidden per user request)
-    const $sourceLabel = document.getElementById("narrative-source-label");
-    if ($sourceLabel) {
-        $sourceLabel.style.display = "none";
-    }
-    const badge = document.getElementById("triage-badge");
-    const triageUpper = r.triage.toUpperCase();
-    const TRIAGE_BADGE_TEXT = {
-        "RED": "RED: Provider Review Recommended",
-        "YELLOW": "YELLOW: Closer Observation Suggested",
-        "GREEN": "GREEN: Routine Review",
-    };
-    badge.textContent = TRIAGE_BADGE_TEXT[triageUpper] || triageUpper;
-    badge.className = `triage-badge ${r.triage.toLowerCase()}`;
-
-    // Priority badge (Decision 5)
-    const priorityBadge = document.getElementById("priority-badge");
-    const priority = (r.report_priority || "LOW").toUpperCase();
-    const PRIORITY_LABELS = {
-        "HIGH": "⚡ HIGH Priority",
-        "MEDIUM": "● MEDIUM Priority",
-        "LOW": "○ LOW Priority",
-        "SKIP": "— SKIP",
-    };
-    priorityBadge.textContent = PRIORITY_LABELS[priority] || priority;
-    priorityBadge.className = `priority-badge ${priority.toLowerCase()}`;
-
-    // Quality warnings banner
+    // 3. Quality Warnings Banner
     const warningSection = document.getElementById("quality-warnings");
     const warningText = document.getElementById("warning-text");
     if (r.quality_warnings && r.quality_warnings.length > 0) {
-        warningText.textContent = r.quality_warnings.join(" • ");
-        warningSection.style.display = "flex";
+        if (warningText) warningText.textContent = r.quality_warnings.join(" • ");
+        if (warningSection) warningSection.style.display = "flex";
     } else {
-        warningSection.style.display = "none";
+        if (warningSection) warningSection.style.display = "none";
     }
 
-    // Phase timeline (status timeline)
+    // 4. Last 24 Hours Dual Column Grid (HR vs RR)
+    const snap = r.snapshot_24h || {};
+    const hrSnap = snap.hr || {};
+    const rrSnap = snap.rr || {};
+    const snapEvents = snap.events || [];
+
+    const hrEvents = snapEvents.filter(e => String(e.phase_type || "").includes("hr"));
+    const rrEvents = snapEvents.filter(e => String(e.phase_type || "").includes("rr") || String(e.category || "").includes("Breathing"));
+
+    const renderL24List = (containerId, evList, zeroMsg) => {
+        const el = document.getElementById(containerId);
+        if (!el) return;
+        if (evList.length === 0) {
+            el.innerHTML = `<div style="color:#6B7280; font-style:italic;">${zeroMsg}</div>`;
+        } else {
+            el.innerHTML = evList.map(e => `
+                <div style="margin-bottom: 6px;">
+                    <strong>${escapeHtml(e.category || "Event")}</strong> — ${escapeHtml(e.time_span || "")}<br/>
+                    <span style="color:#6B7280">${escapeHtml(e.average || "")} (min: ${e.min}, max: ${e.max})</span>
+                </div>
+            `).join("");
+        }
+    };
+
+    renderL24List("l24-hr-events", hrEvents, "No measured windows");
+    renderL24List("l24-rr-events", rrEvents, "No measured windows");
+
+    const formatSpread = (d, unit) => {
+        if (d && d.min != null && d.max != null) {
+            const avgStr = d.avg != null ? ` <span style="color:#6B7280; font-weight:normal;">(avg: ${Math.round(d.avg)})</span>` : "";
+            return `Spread: ${Math.round(d.min)} to ${Math.round(d.max)}${avgStr} ${unit}`;
+        }
+        return `Spread: — ${unit}`;
+    };
+
+    setElHtml("l24-hr-spread", formatSpread(hrSnap, "bpm"));
+    setElHtml("l24-rr-spread", formatSpread(rrSnap, "brpm"));
+
+    // 5. Status Timeline / Episodic Events + EPD Chart
     const phaseTimeline = document.getElementById("phase-timeline");
     const phasesContainer = document.getElementById("phases-container");
-    if (r.phases && r.phases.length > 0) {
+    const epdChart = document.getElementById("epd-chart-image");
+    const headingEl = document.getElementById("timeline-heading");
+
+    if (headingEl && r.window_start && r.window_end) {
+        headingEl.innerHTML = `<span class="pdf-blue-text">Episodic events per day</span> &middot; ${escapeHtml(formatPeriod(r.window_start, r.window_end))}`;
+    }
+
+    if (epdChart) {
+        if (r.chart_epd_b64) {
+            epdChart.src = `data:image/png;base64,${r.chart_epd_b64}`;
+            epdChart.style.display = "block";
+        } else {
+            epdChart.style.display = "none";
+        }
+    }
+
+    if (r.phases && r.phases.length > 0 && phasesContainer) {
         phasesContainer.innerHTML = "";
         r.phases.forEach(p => {
             const block = document.createElement("div");
             block.className = `phase-block ${p.type}`;
             block.style.flex = p.days;
             block.innerHTML = `
-                <span class="phase-label">${p.label}</span>
-                <span class="phase-dates">${p.date_range} (${p.days}d)</span>
+                <span class="phase-label">${escapeHtml(p.label)}</span>
+                <span class="phase-dates">${escapeHtml(p.date_range)} (${p.days}d)</span>
             `;
             phasesContainer.appendChild(block);
         });
+        if (phaseTimeline) phaseTimeline.style.display = "block";
+    } else if (r.chart_epd_b64 && phaseTimeline) {
+        if (phasesContainer) phasesContainer.innerHTML = "";
         phaseTimeline.style.display = "block";
-    } else {
+    } else if (phaseTimeline) {
         phaseTimeline.style.display = "none";
     }
 
-    // Actions
-    const actionsList = document.getElementById("actions-list");
-    actionsList.innerHTML = "";
-    (r.suggested_actions || []).forEach((action) => {
-        const li = document.createElement("li");
-        li.textContent = action;
-        actionsList.appendChild(li);
-    });
-
-    // 24-hour snapshot (matches the PDF block)
-    const snapSection = document.getElementById("section-snapshot");
-    const snap = r.snapshot_24h;
-    if (snap) {
-        const snapCell = (v, unit) => (typeof v === "number") ? `${Math.round(v)} ${unit}` : "—";
-        document.getElementById("snapshot-tbody").innerHTML = `
-            <tr><td><strong>Heart Rate</strong></td><td>${snapCell(snap.hr && snap.hr.avg, "bpm")}</td><td>${snapCell(snap.hr && snap.hr.min, "bpm")}</td><td>${snapCell(snap.hr && snap.hr.max, "bpm")}</td></tr>
-            <tr><td><strong>Breathing</strong></td><td>${snapCell(snap.rr && snap.rr.avg, "brpm")}</td><td>${snapCell(snap.rr && snap.rr.min, "brpm")}</td><td>${snapCell(snap.rr && snap.rr.max, "brpm")}</td></tr>
-        `;
-        const snapNote = document.getElementById("snapshot-note");
-        if (snap.coverage_pct != null && snap.coverage_pct < 75) {
-            snapNote.textContent = `Limited data in the final 24h (${snap.hours_present}/${snap.expected_hours}h); values reflect available readings.`;
-            snapNote.style.display = "block";
+    // 6. Narrative / Signal Summary
+    const $narrativeText = document.getElementById("narrative-text");
+    if ($narrativeText) {
+        if (r.narrative && typeof r.narrative === "object" && r.narrative.opening !== undefined) {
+            const grade = (r.report_priority || "").charAt(0) + (r.report_priority || "").slice(1).toLowerCase();
+            const gradeStr = grade ? `  <strong>Priority grade: ${escapeHtml(grade)}</strong>` : "";
+            let narrativeHtml = `<p>${escapeHtml(r.narrative.opening)}${gradeStr}</p>`;
+            if (r.narrative.phase_lines && r.narrative.phase_lines.length > 0) {
+                narrativeHtml += "<div style='margin: 4px 0 8px 16px;'>";
+                r.narrative.phase_lines.forEach(line => {
+                    narrativeHtml += `<div style="margin-bottom: 4px;">${escapeHtml(line)}</div>`;
+                });
+                narrativeHtml += "</div>";
+            }
+            if (r.narrative.closing) {
+                narrativeHtml += `<p>${escapeHtml(r.narrative.closing)}</p>`;
+            }
+            $narrativeText.innerHTML = narrativeHtml;
         } else {
-            snapNote.style.display = "none";
+            $narrativeText.textContent = (typeof r.narrative === "string" ? r.narrative : "") || "No narrative available.";
         }
-        renderSnapshotBanner(snap);
-        renderSnapshotSummary(snap);
-        renderSnapshotEvents(snap);
-        snapSection.style.display = "block";
-    } else {
-        snapSection.style.display = "none";
     }
 
-    // Unified episodic events table — same per-finding rows as the PDF
-    // (narrative.phase_table_rows), burden-weighted; bare-number metrics.
-    const tbody = document.getElementById("episodes-tbody");
-    const noEp = document.getElementById("no-episodes");
-    const epWrap = document.getElementById("episodes-table").closest(".table-wrapper");
-    tbody.innerHTML = "";
-    const ptRows = (r.narrative && r.narrative.phase_table_rows) ? r.narrative.phase_table_rows.slice() : [];
-    // Severity tier first (most important), then chronological within a tier.
-    const SEV = {very_high_hr:0, very_low_hr:0, very_high_rr:0, high_hr:1, high_rr:1,
-                 low_hr:2, elevated_hr:3, elevated_rr:3};
-    const sevRank = (row) => SEV[row.phase_type] != null ? SEV[row.phase_type] : 9;
-    const dnum = (row) => { const t = Date.parse((row.date || "").split(" to ")[0] + " 2000"); return isNaN(t) ? 8.64e15 : t; };
-    ptRows.sort((a, b) => (sevRank(a) - sevRank(b)) || (dnum(a) - dnum(b)));
-    const bare = (s) => String(s == null ? "" : s).replace(" bpm", "").replace(" brpm", "").trim();
-    if (ptRows.length > 0) {
-        if (epWrap) epWrap.style.display = "block";
-        noEp.style.display = "none";
-        ptRows.forEach((row) => {
-            const tr = document.createElement("tr");
-            const cond = String(row.category || "").replace(" (brief)", "");
-            // Bold linking: condition keyword + triggering metric (Max for high
-            // conditions, Min for low) bold, so the eye connects condition->number.
-            const isLow = String(row.phase_type || "").includes("low");
-            const minCell = bare(row.min), maxCell = bare(row.max);
-            tr.innerHTML = `
-                <td>${escapeHtml(row.date || "")}</td>
-                <td>${escapeHtml(row.time_span || "")}</td>
-                <td>${row.total_hours != null ? row.total_hours : ""}h</td>
-                <td>${row.episodes != null ? row.episodes : ""}</td>
-                <td><strong>${escapeHtml(cond)}</strong></td>
-                <td>${escapeHtml(bare(row.average))}</td>
-                <td>${isLow ? "<strong>" + escapeHtml(minCell) + "</strong>" : escapeHtml(minCell)}</td>
-                <td>${isLow ? escapeHtml(maxCell) : "<strong>" + escapeHtml(maxCell) + "</strong>"}</td>
-                <td>${escapeHtml(row.comment || "")}</td>
-            `;
-            tbody.appendChild(tr);
+    const actionsList = document.getElementById("actions-list");
+    if (actionsList) {
+        actionsList.innerHTML = "";
+        (r.suggested_actions || []).forEach((action) => {
+            const li = document.createElement("li");
+            li.textContent = action;
+            actionsList.appendChild(li);
         });
-    } else {
-        if (epWrap) epWrap.style.display = "none";
-        noEp.style.display = "block";
     }
 
-    // Stats table — use human-readable labels matching PDF
-    const statsTbody = document.getElementById("stats-tbody");
-    statsTbody.innerHTML = "";
+    // 7. Measured Windows List (Cards with Blue Left Accent)
+    const mwList = document.getElementById("measured-windows-list");
+    const noEp = document.getElementById("no-episodes");
+    if (mwList) mwList.innerHTML = "";
 
-    if (r.full_stats && r.full_stats.rows && r.full_stats.rows.length > 0) {
-        // Update header to 6 columns
-        const statsTable = document.getElementById("stats-table");
-        if (statsTable) {
-            const thead = statsTable.querySelector("thead");
-            if (thead) {
-                thead.innerHTML = `<tr><th>Metric</th><th>Mean</th><th>Min</th><th>Max</th><th>P5</th><th>P95</th></tr>`;
+    const episodeRows = (r.narrative && r.narrative.episode_table_rows) ? r.narrative.episode_table_rows.slice() : [];
+    const ptRows = episodeRows.length > 0 ? episodeRows : ((r.narrative && r.narrative.phase_table_rows) ? r.narrative.phase_table_rows.slice() : []);
+
+    ptRows.sort((a, b) => (b.severity_score || 0) - (a.severity_score || 0));
+
+    if (ptRows.length > 0) {
+        if (noEp) noEp.style.display = "none";
+        if (mwList) {
+            const displayRows = ptRows.slice(0, 4);
+            displayRows.forEach((row) => {
+                const card = document.createElement("div");
+                card.className = "measured-window-card";
+                const cond = String(row.category || "").replace(" (brief)", "");
+                const th = row.total_hours || row.sustained_hours || 0;
+                const durationDesc = row.duration_descriptor ? `${row.duration_descriptor}, ${th}h` : (th ? `sustained, ${th}h` : "");
+                card.innerHTML = `
+                    <div class="window-card-left">
+                        <span class="window-condition">${escapeHtml(cond)} ${durationDesc}</span>
+                        <span class="window-time">${escapeHtml(row.date || "")} ${escapeHtml(row.time_span || "")} · avg ${escapeHtml(String(row.average || ""))} (peak ${escapeHtml(String(row.max || ""))})</span>
+                    </div>
+                    <div class="window-note">${escapeHtml(row.comment || "")}</div>
+                `;
+                mwList.appendChild(card);
+            });
+            if (ptRows.length > 4) {
+                const plusMore = document.createElement("div");
+                plusMore.style.marginTop = "8px";
+                plusMore.style.fontStyle = "italic";
+                plusMore.style.color = "#6B7280";
+                plusMore.style.fontSize = "0.78rem";
+                plusMore.textContent = `plus ${ptRows.length - 4} more windows`;
+                mwList.appendChild(plusMore);
             }
         }
-        r.full_stats.rows.forEach((row) => {
-            const tr = document.createElement("tr");
-            // Use clinical-friendly stat labels matching PDF
-            const displayLabel = STATS_LABELS[row.label] || row.label;
-            tr.innerHTML = `<td><strong>${escapeHtml(displayLabel)}</strong></td><td>${row.mean}</td><td>${row.min}</td><td>${row.max}</td><td>${row.p5}</td><td>${row.p95}</td>`;
-            statsTbody.appendChild(tr);
-        });
+    } else {
+        if (noEp) noEp.style.display = "block";
     }
 
-    // NEW: Positional Stats — hide for single-sensor bed reports
+    // 8. Summary Stat Tiles Grid
+    const hr = r.hr_summaries || {};
+    const rr = r.rr_summaries || {};
+    const dq = r.data_quality || {};
+
+    const hrP5 = hr.p5 != null ? Math.round(hr.p5) : "—";
+    const hrP95 = hr.p95 != null ? Math.round(hr.p95) : "—";
+    const rrP5 = rr.p5 != null ? Math.round(rr.p5) : "—";
+    const rrP95 = rr.p95 != null ? Math.round(rr.p95) : "—";
+
+    setElText("tile-hr-range", `${hrP5} to ${hrP95}`);
+    setElText("tile-rr-range", `${rrP5} to ${rrP95}`);
+    setElText("tile-coverage", `${dq.coverage_pct != null ? Math.round(dq.coverage_pct) + "%" : "—"}`);
+    setElText("tile-windows", ptRows.length > 0 ? String(ptRows.length) : "0");
+
+    const phaseBanner = document.getElementById("pdf-phase-banner");
+    if (phaseBanner) {
+        if (r.phases && r.phases.length > 0) {
+            const topPhase = r.phases[0];
+            phaseBanner.textContent = `${topPhase.label} (${topPhase.date_range})`;
+            phaseBanner.style.display = "block";
+        } else {
+            phaseBanner.style.display = "none";
+        }
+    }
+
+    // Page 2 header bar — compact patient/period/badge + "Page 2 of 2"
+    const page2Header = document.getElementById("page2-header");
+    const page2Meta = document.getElementById("page2-meta");
+    if (page2Header && page2Meta) {
+        const triageBadge = (triageUpper === "RED" || triageUpper === "YELLOW") ? "Review recommended" : "Routine monitoring";
+        page2Meta.innerHTML = `<strong>Patient ID:</strong> ${escapeHtml(r.patient_id)} &nbsp;|&nbsp; <strong>Period:</strong> ${escapeHtml(formatPeriod(r.window_start, r.window_end))} &nbsp;|&nbsp; <strong>${escapeHtml(triageBadge)}</strong> &nbsp;|&nbsp; Page 2 of 2`;
+    }
+
+    // Positional Stats — hide for single-sensor bed reports
     const posSection = document.getElementById("positional-section");
     const bedSumSection = document.getElementById("bed-summary-section");
     const isBedSensor = r.sensor_type === "bed";
     const isSingleSensor = r.positional_comparison && r.positional_comparison.rows && r.positional_comparison.rows.length <= 1;
 
     if (isBedSensor && isSingleSensor && r.bed_summary) {
-        // Hide positional, show bed activity summary
-        posSection.style.display = "none";
-        bedSumSection.style.display = "block";
+        if (posSection) posSection.style.display = "none";
+        if (bedSumSection) bedSumSection.style.display = "block";
         const bedTbody = document.getElementById("bed-summary-tbody");
-        bedTbody.innerHTML = "";
-        const bs = r.bed_summary;
-        const bedRows = [
-            ["Mean Daily Bed Time", `${bs.mean_daily_hours.toFixed(1)} hours`],
-            ["Range", `${bs.min_hours.toFixed(0)} – ${bs.max_hours.toFixed(0)} hours`],
-            ["Days Above 16 Hours", `${bs.days_above_16h} days`],
-            ["Low HR Alert Days", `${bs.alert_days} days (${bs.total_alerts} total alerts)`],
-        ];
-        if (bs.hr_min_high_bed_days > 0 && bs.hr_min_normal_days > 0) {
-            bedRows.push(
-                ["HR Min (High Bed Days)", `${bs.hr_min_high_bed_days.toFixed(0)} bpm`],
-                ["HR Min (Normal Days)", `${bs.hr_min_normal_days.toFixed(0)} bpm`],
-            );
+        if (bedTbody) {
+            bedTbody.innerHTML = "";
+            const bs = r.bed_summary;
+            const bedRows = [
+                ["Mean Daily Bed Time", `${bs.mean_daily_hours.toFixed(1)} hours`],
+                ["Range", `${bs.min_hours.toFixed(0)} – ${bs.max_hours.toFixed(0)} hours`],
+                ["Days Above 16 Hours", `${bs.days_above_16h} days`],
+                ["Low HR Alert Days", `${bs.alert_days} days (${bs.total_alerts} total alerts)`],
+            ];
+            if (bs.hr_min_high_bed_days > 0 && bs.hr_min_normal_days > 0) {
+                bedRows.push(
+                    ["HR Min (High Bed Days)", `${bs.hr_min_high_bed_days.toFixed(0)} bpm`],
+                    ["HR Min (Normal Days)", `${bs.hr_min_normal_days.toFixed(0)} bpm`],
+                );
+            }
+            bedRows.forEach(([label, value]) => {
+                const tr = document.createElement("tr");
+                tr.innerHTML = `<td><strong>${escapeHtml(label)}</strong></td><td>${escapeHtml(value)}</td>`;
+                bedTbody.appendChild(tr);
+            });
         }
-        bedRows.forEach(([label, value]) => {
-            const tr = document.createElement("tr");
-            tr.innerHTML = `<td><strong>${escapeHtml(label)}</strong></td><td>${escapeHtml(value)}</td>`;
-            bedTbody.appendChild(tr);
-        });
     } else if (r.positional_comparison && r.positional_comparison.rows && r.positional_comparison.rows.length > 0) {
-        posSection.style.display = "block";
-        bedSumSection.style.display = "none";
+        if (posSection) posSection.style.display = "block";
+        if (bedSumSection) bedSumSection.style.display = "none";
         const posTbody = document.getElementById("positional-tbody");
-        posTbody.innerHTML = "";
-        r.positional_comparison.rows.forEach(row => {
-            const tr = document.createElement("tr");
-            tr.innerHTML = `<td><strong>${escapeHtml(row.location)}</strong></td><td>${row.hr_avg}</td><td>${row.rr_avg}</td><td>${row.hours}</td>`;
-            posTbody.appendChild(tr);
-        });
+        if (posTbody) {
+            posTbody.innerHTML = "";
+            r.positional_comparison.rows.forEach(row => {
+                const tr = document.createElement("tr");
+                tr.innerHTML = `<td><strong>${escapeHtml(row.location)}</strong></td><td>${row.hr_avg}</td><td>${row.rr_avg}</td><td>${row.hours}</td>`;
+                posTbody.appendChild(tr);
+            });
+        }
         const posSum = document.getElementById("positional-summary");
-        if (r.positional_comparison.br_diff_living_vs_chair !== 0) {
-            const diff = r.positional_comparison.br_diff_living_vs_chair;
-            posSum.textContent = `Respiratory rate in living room averaged ${diff > 0 ? '+' : ''}${diff} breaths/min versus chair. Positional respiratory difference can indicate fluid redistribution when patient changes position.`;
-        } else {
-            posSum.textContent = "";
+        if (posSum) {
+            if (r.positional_comparison.br_diff_living_vs_chair !== 0) {
+                const diff = r.positional_comparison.br_diff_living_vs_chair;
+                posSum.textContent = `Respiratory rate in living room averaged ${diff > 0 ? '+' : ''}${diff} breaths/min versus chair. Positional respiratory difference can indicate fluid redistribution when patient changes position.`;
+            } else {
+                posSum.textContent = "";
+            }
         }
     } else {
-        posSection.style.display = "none";
-        bedSumSection.style.display = "none";
+        if (posSection) posSection.style.display = "none";
+        if (bedSumSection) bedSumSection.style.display = "none";
     }
 
-    // Chart — Bed Hours (bed sensor only, shown first)
+    // Chart — Bed Hours (bed sensor only)
     const bedChartImg = document.getElementById("bed-hours-chart-image");
-    if (r.chart_bed_hours_b64) {
-        bedChartImg.src = `data:image/png;base64,${r.chart_bed_hours_b64}`;
-        bedChartImg.style.display = "block";
-    } else {
-        bedChartImg.style.display = "none";
+    if (bedChartImg) {
+        if (r.chart_bed_hours_b64) {
+            bedChartImg.src = `data:image/png;base64,${r.chart_bed_hours_b64}`;
+            bedChartImg.style.display = "block";
+        } else {
+            bedChartImg.style.display = "none";
+        }
     }
 
-    // Chart — candlestick
+    // Chart — Daily trend (candlestick)
     const chartImg = document.getElementById("chart-image");
-    if (r.chart_combined_b64) {
-        chartImg.src = `data:image/png;base64,${r.chart_combined_b64}`;
-        chartImg.style.display = "block";
-    } else {
-        chartImg.style.display = "none";
+    if (chartImg) {
+        if (r.chart_combined_b64) {
+            chartImg.src = `data:image/png;base64,${r.chart_combined_b64}`;
+            chartImg.style.display = "block";
+        } else {
+            chartImg.style.display = "none";
+        }
     }
 
-    // Chart — histogram
+    // Chart — Distribution (histogram)
     const histImg = document.getElementById("histogram-image");
-    if (r.chart_histogram_b64) {
-        histImg.src = `data:image/png;base64,${r.chart_histogram_b64}`;
-        histImg.style.display = "block";
-    } else {
-        histImg.style.display = "none";
+    if (histImg) {
+        if (r.chart_histogram_b64) {
+            histImg.src = `data:image/png;base64,${r.chart_histogram_b64}`;
+            histImg.style.display = "block";
+        } else {
+            histImg.style.display = "none";
+        }
     }
 
-    // NEW: Positional Chart
+    // Positional Chart
     const posChartImg = document.getElementById("positional-chart-image");
-    if (r.chart_positional_b64 && !isBedSensor) {
-        posChartImg.src = `data:image/png;base64,${r.chart_positional_b64}`;
-        posChartImg.style.display = "block";
-    } else {
-        posChartImg.style.display = "none";
+    if (posChartImg) {
+        if (r.chart_positional_b64 && !isBedSensor) {
+            posChartImg.src = `data:image/png;base64,${r.chart_positional_b64}`;
+            posChartImg.style.display = "block";
+        } else {
+            posChartImg.style.display = "none";
+        }
     }
 
-    // NEW: Activity Chart
+    // Activity Chart (Daily monitoring coverage)
     const actChartImg = document.getElementById("activity-chart-image");
-    if (r.chart_activity_b64) {
-        actChartImg.src = `data:image/png;base64,${r.chart_activity_b64}`;
-        actChartImg.style.display = "block";
-    } else {
-        actChartImg.style.display = "none";
+    if (actChartImg) {
+        if (r.chart_activity_b64) {
+            actChartImg.src = `data:image/png;base64,${r.chart_activity_b64}`;
+            actChartImg.style.display = "block";
+        } else {
+            actChartImg.style.display = "none";
+        }
     }
 
     // Trend assessment bar
     const trendBar = document.getElementById("section-trend");
-    trendBar.className = `trend-assessment-bar ${r.triage.toLowerCase()}`;
-    document.getElementById("trend-value").textContent = r.trend_assessment;
-    document.getElementById("posture-value").textContent = r.overall_action_posture;
+    if (trendBar) {
+        trendBar.className = `trend-assessment-bar ${(r.triage || "").toLowerCase()}`;
+        setElText("trend-value", r.trend_assessment || "Stable");
+        setElText("posture-value", r.overall_action_posture || "Routine review");
+    }
 
     // Footer — matching PDF format + sensor modality disclaimer
-    const dq = r.data_quality;
+    const dqObj = r.data_quality || {};
     const sensorNote = r.sensor_type === "bed"
         ? "Sensor: Radar-based contactless bed monitor (not ECG or pulse oximetry)."
         : "Sensor: Radar-based contactless chair monitor (not ECG or pulse oximetry).";
     document.getElementById("footer-quality").textContent =
-        `Data Quality: ${dq.total_hours} of ${dq.expected_hours} expected hours (${dq.quality_pct}% coverage). Low confidence hours: ${dq.low_confidence_hours}. ${sensorNote}`;
+        `Data Quality: ${dqObj.total_hours || 0} of ${dqObj.expected_hours || 0} expected hours (${dqObj.quality_pct || 0}% coverage). ${sensorNote}`;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -1065,6 +727,8 @@ function truncate(str, max) {
     return str.length > max ? str.substring(0, max - 3) + "…" : str;
 }
 
-// ── Boot ────────────────────────────────────────────────────────────────────
-
-init();
+// ── Global Exports ──────────────────────────────────────────────────────────
+window.renderFullReport = renderReport;
+window.showLibrarySummary = showLibrarySummary;
+window.downloadLibrarySummary = downloadLibrarySummary;
+window.showLoading = showLoading;

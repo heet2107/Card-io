@@ -16,6 +16,22 @@
     />
     <link rel="stylesheet" href="style.css?v=1.0.5" />
     <link rel="stylesheet" href="triage.css?v=1.0.0" />
+    <script>
+      window.__js_errors = [];
+      window.onerror = function (msg, url, line, col, error) {
+        var errStr = msg + " (at " + (url || "").split("/").pop() + ":" + line + ":" + col + ")";
+        window.__js_errors.push(errStr);
+        console.error("PAGE ERROR:", errStr);
+        var banner = document.getElementById("js-error-banner");
+        if (!banner) {
+          banner = document.createElement("div");
+          banner.id = "js-error-banner";
+          banner.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:999999;background:#b91c1c;color:#fff;padding:8px 16px;font-size:13px;font-weight:600;";
+          document.body.appendChild(banner);
+        }
+        banner.textContent = "JavaScript Error: " + errStr;
+      };
+    </script>
   </head>
   <body>
     <div id="app-layout">
@@ -96,6 +112,8 @@
                 <option value="last_7d" selected>Last 7 Days</option>
                 <option value="last_15d">Last 15 Days</option>
                 <option value="last_1m">Last 1 Month</option>
+                <option value="last_3m">Last 3 Months</option>
+                <option value="smart_week">Most Critical Week</option>
               </select>
             </div>
             <!-- The Triage Priority Button -->
@@ -267,125 +285,45 @@
         <!-- ════════ 2. CLASSIC FULL REPORT VIEW (TOGGLED) ════════ -->
         <div id="classic-report-view" style="display: none; flex: 1; overflow-y: auto;">
     <!-- ═══════════════════════════════════════════════════════════════ -->
-    <!-- TOP NAV                                                       -->
+    <!-- REPORT ACTION SUB-BAR (Unified with Topbar Controls)         -->
     <!-- ═══════════════════════════════════════════════════════════════ -->
-    <nav id="topnav">
-      <div class="nav-brand">
-        <svg
-          class="nav-logo"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-        >
-          <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
-        </svg>
-        <span class="nav-title">CardioReport</span>
-        <span class="nav-badge">Clinical Intelligence</span>
+    <div class="report-action-subbar" id="report-action-subbar">
+      <div class="subbar-left">
+        <div class="subbar-patient-pill" id="subbar-patient-pill">
+          <span class="subbar-dot">●</span>
+          <span id="subbar-patient-label">Loading patient…</span>
+          <span class="subbar-window-tag" id="subbar-window-tag">Last 7 Days</span>
+        </div>
+        <div class="subbar-sensors" id="location-info">
+          <!-- Dynamically populated sensor badges -->
+        </div>
       </div>
-      <div class="nav-meta">
-        <button id="btn-summary" class="btn-nav-summary" disabled title="24-hour triage summary of every patient in this library, critical first">
-          ≡ 24h Library Summary
+      <div class="subbar-right">
+        <label class="toggle-switch-compact" title="Include AI-generated clinical narrative">
+          <input type="checkbox" id="ai-toggle">
+          <span class="toggle-slider"></span>
+          <span class="toggle-text">AI Narrative</span>
+        </label>
+        <button id="btn-smart-week" class="btn btn-sm btn-outline" title="Auto-detect the most clinically significant 7-day window">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13">
+            <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
+          </svg>
+          Most Critical Week
         </button>
-        <span class="nav-version">v1.0</span>
+        <button id="btn-summary" class="btn btn-sm btn-outline" title="24-hour triage summary of every patient in this library">
+          ≡ 24h Summary
+        </button>
+        <button id="btn-download" class="btn btn-sm btn-primary" title="Download official PDF report">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13">
+            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+          </svg>
+          Download PDF
+        </button>
+        <button id="btn-export-json" class="btn btn-sm btn-ghost" title="Export report events as JSON">
+          Export JSON
+        </button>
       </div>
-    </nav>
-
-    <!-- ═══════════════════════════════════════════════════════════════ -->
-    <!-- CONTROLS PANEL                                                -->
-    <!-- ═══════════════════════════════════════════════════════════════ -->
-    <section id="controls-panel" class="controls-panel">
-      <div class="controls-inner">
-        <div class="control-group">
-          <label for="client-select">Library</label>
-          <select id="client-select">
-            <option value="">Loading…</option>
-          </select>
-        </div>
-        <div class="control-group">
-          <label for="patient-select">Patient</label>
-          <select id="patient-select">
-            <option value="">Loading patients…</option>
-          </select>
-        </div>
-        <div class="control-group">
-          <label for="range-select">Time Window</label>
-          <select id="range-select">
-            <option value="last_24h">Last 24 Hours</option>
-            <option value="last_7d">Last 7 Days</option>
-            <option value="last_15d">Last 15 Days</option>
-            <option value="last_1m" selected>Last 1 Month</option>
-            <option value="last_3m">Last 3 Months</option>
-            <option value="custom">Custom Range</option>
-          </select>
-        </div>
-        <div
-          class="control-group custom-range"
-          id="custom-range"
-          style="display: none"
-        >
-          <label for="start-date">Start</label>
-          <input type="date" id="start-date" />
-        </div>
-        <div
-          class="control-group custom-range"
-          id="custom-range-end"
-          style="display: none"
-        >
-          <label for="end-date">End</label>
-          <input type="date" id="end-date" />
-        </div>
-        <div class="control-group ai-toggle-group">
-          <label for="ai-toggle">AI Analysis</label>
-          <label class="toggle-switch">
-            <input type="checkbox" id="ai-toggle">
-            <span class="slider"></span>
-          </label>
-        </div>
-        <div class="control-actions">
-          <button id="btn-smart-week" class="btn btn-smart" disabled title="Auto-detect the most clinically significant 7-day window">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-              <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
-            </svg>
-            Most Critical Week
-          </button>
-          <button id="btn-generate" class="btn btn-primary" disabled>
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              width="16"
-              height="16"
-            >
-              <path
-                d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"
-              />
-            </svg>
-            Generate Report
-          </button>
-          <button id="btn-download" class="btn btn-secondary" disabled>
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              width="16"
-              height="16"
-            >
-              <path
-                d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"
-              />
-            </svg>
-            Download PDF
-          </button>
-          </button>
-          <button id="btn-export-json" class="btn btn-ghost" disabled>
-            Export JSON
-          </button>
-        </div>
-      </div>
-    </section>
+    </div>
 
     <!-- ═══════════════════════════════════════════════════════════════ -->
     <!-- LOADING STATE                                                 -->
@@ -643,6 +581,9 @@
           <h2 class="section-title" id="summary-title">24 Hour Patient Summary</h2>
           <div class="summary-head-right">
             <span class="summary-gen" id="summary-gen"></span>
+            <button id="btn-summary-back" class="btn btn-ghost" title="Return to active patient report">
+              ← Back to Report
+            </button>
             <button id="btn-summary-download" class="btn btn-secondary">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15">
                 <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/>
@@ -692,7 +633,7 @@
     <!-- Toast notification -->
     <div id="triage-toast" class="triage-toast"></div>
 
-    <script src="app.js?v=native5"></script>
-    <script src="triage.js?v=1.0.0"></script>
+    <script src="app.js?v=unified5"></script>
+    <script src="triage.js?v=unified5"></script>
   </body>
 </html>

@@ -115,16 +115,12 @@
       });
     }
 
-    // Top Controls
+    // Top Controls (Single Source of Truth)
     const $clientSelect = document.getElementById("triage-client-select");
     if ($clientSelect) {
       $clientSelect.addEventListener("change", async (e) => {
         activeClient = e.target.value;
-        const mainClientSel = document.getElementById("client-select");
-        if (mainClientSel && mainClientSel.value !== activeClient) {
-          mainClientSel.value = activeClient;
-          mainClientSel.dispatchEvent(new Event("change"));
-        }
+        activePatient = null;
         await loadLibrariesAndCohort(true);
       });
     }
@@ -133,8 +129,6 @@
     if ($patientSelect) {
       $patientSelect.addEventListener("change", async (e) => {
         activePatient = e.target.value;
-        const mainPtSel = document.getElementById("patient-select");
-        if (mainPtSel) mainPtSel.value = activePatient;
         await loadPatientReport(activePatient, activeWindow);
       });
     }
@@ -165,10 +159,52 @@
         $workspace.style.display = "none";
         if ($classicView) {
           $classicView.style.display = "block";
-          // Trigger report generation in classic view if needed
-          const genBtn = document.getElementById("btn-generate");
-          if (genBtn && !genBtn.disabled) genBtn.click();
+          if (currentReportData && window.renderFullReport) {
+            window.renderFullReport(currentReportData);
+          }
+          const repContainer = document.getElementById("report-container");
+          const empState = document.getElementById("empty-state");
+          if (repContainer) repContainer.style.display = "block";
+          if (empState) empState.style.display = "none";
         }
+      });
+    }
+
+    // Report Subbar Action Buttons
+    const $btnDownload = document.getElementById("btn-download");
+    if ($btnDownload) {
+      $btnDownload.addEventListener("click", () => {
+        downloadTriagePdf();
+      });
+    }
+
+    const $btnExportJson = document.getElementById("btn-export-json");
+    if ($btnExportJson) {
+      $btnExportJson.addEventListener("click", () => {
+        exportEventsJson();
+      });
+    }
+
+    const $btnSmartWeek = document.getElementById("btn-smart-week");
+    if ($btnSmartWeek) {
+      $btnSmartWeek.addEventListener("click", () => {
+        triggerSmartWeek();
+      });
+    }
+
+    const $btnSummary = document.getElementById("btn-summary");
+    if ($btnSummary) {
+      $btnSummary.addEventListener("click", () => {
+        if (window.showLibrarySummary) {
+          window.showLibrarySummary();
+        }
+      });
+    }
+
+    const $aiToggle = document.getElementById("ai-toggle");
+    if ($aiToggle) {
+      $aiToggle.addEventListener("change", async () => {
+        await loadPatientReport(activePatient, activeWindow);
       });
     }
 
@@ -287,17 +323,66 @@
           $cSel.appendChild(opt);
         });
         if (!keepClient && clients.length > 0) {
-          activeClient = clients[0].id;
+          const pam = clients.find((c) => c.id === "pam_health");
+          activeClient = pam ? pam.id : clients[0].id;
           $cSel.value = activeClient;
         } else if (keepClient && activeClient) {
           $cSel.value = activeClient;
         }
       }
 
+      // Update window options according to library (months vs rolling ranges)
+      await updateWindowOptions();
+
       // Fetch summary to obtain triage rank
       await fetchCohortSummary();
     } catch (e) {
       console.error("loadLibrariesAndCohort error:", e);
+    }
+  }
+
+  // Update window selector options (MedHab months vs PAM Health rolling ranges)
+  async function updateWindowOptions() {
+    const $wSel = document.getElementById("triage-window-select");
+    if (!$wSel || !activeClient) return;
+
+    try {
+      const res = await fetch(`${API}/api/months?client=${encodeURIComponent(activeClient)}`);
+      const data = res.ok ? await res.json() : { months: [] };
+      const months = data.months || [];
+
+      $wSel.innerHTML = "";
+      if (months.length > 0) {
+        months.forEach((m) => {
+          const opt = document.createElement("option");
+          opt.value = m.key;
+          opt.textContent = m.label;
+          $wSel.appendChild(opt);
+        });
+        activeWindow = months[0].key;
+      } else {
+        const defaultOptions = [
+          { value: "last_24h", label: "Last 24 Hours" },
+          { value: "last_7d", label: "Last 7 Days" },
+          { value: "last_15d", label: "Last 15 Days" },
+          { value: "last_1m", label: "Last 1 Month" },
+          { value: "last_3m", label: "Last 3 Months" },
+          { value: "smart_week", label: "Most Critical Week" },
+        ];
+        defaultOptions.forEach((o) => {
+          const opt = document.createElement("option");
+          opt.value = o.value;
+          opt.textContent = o.label;
+          if (o.value === activeWindow) opt.selected = true;
+          $wSel.appendChild(opt);
+        });
+        if (!defaultOptions.some(o => o.value === activeWindow)) {
+          activeWindow = "last_7d";
+        }
+      }
+      $wSel.value = activeWindow;
+    } catch (e) {
+      console.error("updateWindowOptions error:", e);
     }
   }
 
@@ -359,12 +444,18 @@
   async function loadPatientReport(patientId, windowType) {
     if (!patientId) return;
     try {
+      const aiToggle = document.getElementById("ai-toggle");
+      const useAi = aiToggle ? aiToggle.checked : false;
+      const isMonth = /^\d{4}-\d{2}$/.test(windowType || "");
       const payload = {
         patient_id: patientId,
         client: activeClient,
-        range_type: windowType || "last_7d",
-        use_ai: false,
+        range_type: isMonth ? "month" : (windowType || "last_7d"),
+        use_ai: useAi,
       };
+      if (isMonth) {
+        payload.month = windowType;
+      }
 
       const res = await fetch(`${API}/api/report/preview`, {
         method: "POST",
@@ -380,9 +471,44 @@
       renderMasterList();
       renderSignalWaveform();
       renderAuditLog();
+
+      // Render the Full Report view simultaneously with identical state
+      if (window.renderFullReport) {
+        window.renderFullReport(currentReportData);
+      }
+      updateSubbarUI();
     } catch (e) {
       console.error("loadPatientReport error:", e);
       showToast(`Error loading data for ${patientId}`);
+    }
+  }
+
+  // Update Report Subbar Pill & Sensors
+  function updateSubbarUI() {
+    if (!currentReportData) return;
+    const pid = currentReportData.patient_id;
+    const subbarLabel = document.getElementById("subbar-patient-label");
+    const subbarTag = document.getElementById("subbar-window-tag");
+    const subbarSensors = document.getElementById("location-info");
+    const triageStatus = (currentReportData.triage || "Green").toLowerCase();
+    const dot = document.querySelector(".subbar-dot");
+
+    if (subbarLabel) subbarLabel.textContent = getDisplayName(pid);
+    if (dot) {
+      dot.style.color = triageStatus.includes("red") ? "#dc2626" : triageStatus.includes("yellow") ? "#d97706" : "#16a34a";
+    }
+    if (subbarTag) {
+      const $wSel = document.getElementById("triage-window-select");
+      const selectedOption = $wSel && $wSel.selectedOptions[0] ? $wSel.selectedOptions[0].textContent : activeWindow;
+      subbarTag.textContent = selectedOption;
+    }
+    if (subbarSensors) {
+      const loc = currentReportData.sensor_type === "bed" ? "🛏️ Bed" : "🪑 Chair";
+      const totalH = currentReportData.data_quality ? currentReportData.data_quality.total_hours : 0;
+      subbarSensors.innerHTML = `
+        <span class="loc-badge">${loc}</span>
+        <span class="date-hint">Window: ${currentReportData.window_start} to ${currentReportData.window_end} (${totalH}h monitored)</span>
+      `;
     }
   }
 
@@ -876,12 +1002,18 @@
     if (!currentReportData) return;
     showToast("Generating official clinical PDF report…");
     try {
+      const aiToggle = document.getElementById("ai-toggle");
+      const useAi = aiToggle ? aiToggle.checked : false;
+      const isMonth = /^\d{4}-\d{2}$/.test(activeWindow || "");
       const payload = {
         patient_id: currentReportData.patient_id,
         client: activeClient,
-        range_type: activeWindow || "last_7d",
-        use_ai: false,
+        range_type: isMonth ? "month" : (activeWindow || "last_7d"),
+        use_ai: useAi,
       };
+      if (isMonth) {
+        payload.month = activeWindow;
+      }
 
       const res = await fetch(`${API}/api/report/pdf`, {
         method: "POST",
@@ -906,6 +1038,50 @@
     }
   }
 
+  // ── Export Events JSON ──────────────────────────────────────────────
+  async function exportEventsJson() {
+    if (!activePatient) return;
+    try {
+      showToast("Exporting clinical events JSON…");
+      const url = `${API}/api/report/events.json?patient_id=${encodeURIComponent(activePatient)}&range_type=${encodeURIComponent(activeWindow)}&client=${encodeURIComponent(activeClient)}`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error("JSON export failed");
+      const data = await res.json();
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = `CardioReport_${activePatient}_${activeWindow}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(blobUrl);
+      showToast("✓ JSON events exported");
+    } catch (e) {
+      console.error(e);
+      showToast("Failed to export JSON");
+    }
+  }
+
+  // ── Most Critical Week Auto-Detection ───────────────────────────────
+  async function triggerSmartWeek() {
+    if (!activePatient) return;
+    showToast("Scanning for most critical 7-day window…");
+    try {
+      const res = await fetch(`${API}/api/patients/${encodeURIComponent(activePatient)}/interesting-week`);
+      if (!res.ok) throw new Error("No critical week found");
+      const data = await res.json();
+      activeWindow = "smart_week";
+      const $wSel = document.getElementById("triage-window-select");
+      if ($wSel) $wSel.value = "smart_week";
+      showToast(`🔍 Most Critical Week: ${data.start} → ${data.end} (Score: ${data.score})`);
+      await loadPatientReport(activePatient, activeWindow);
+    } catch (e) {
+      console.error(e);
+      showToast("Could not find a critical week for this patient");
+    }
+  }
+
   // ── Toast Notification ──────────────────────────────────────────────
   let toastTimer = null;
   function showToast(msg) {
@@ -921,9 +1097,14 @@
   // Export to window for global access
   window.CardioTriage = {
     init: initTriage,
+    getActiveClient: () => activeClient,
+    getActivePatient: () => activePatient,
+    getActiveWindow: () => activeWindow,
     loadPatientReport,
     signAndProcessEpisode,
     downloadTriagePdf,
+    exportEventsJson,
+    triggerSmartWeek,
     showToast,
   };
 
