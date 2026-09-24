@@ -49,16 +49,28 @@ from .charts import (
     generate_combined_chart, generate_histogram,
     generate_positional_chart, generate_activity_trend_chart,
     generate_bed_hours_chart,
+    generate_events_per_day_chart_for_pdf,
 )
 from .pdf_render import generate_pdf
 
 
 # ── App setup ────────────────────────────────────────────────────────────────
 
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI(
     title="CardioReport API",
     version=settings.app_version,
     description="RPM trend report engine",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
 )
 
 
@@ -113,7 +125,7 @@ def resolve_patient_id(patient_id: str) -> str:
 # A patient is loadable only under its own client (privacy boundary, R28_007).
 # See backend/client_registry.py.
 
-def _resolve_client(req_client: str | None, patient_id: str) -> str:
+def _resolve_client(req_client: Optional[str], patient_id: str) -> str:
     """Pick the client a report runs under.
 
     If the request names a client, honour it verbatim (the privacy boundary):
@@ -138,7 +150,11 @@ def _cache_key(req: ReportRequest) -> str:
 
 # ── Pipeline ─────────────────────────────────────────────────────────────────
 
-async def _run_pipeline(req: ReportRequest) -> tuple[dict, "pd.DataFrame"]:
+async def _run_pipeline(
+    req: ReportRequest,
+    df_override: Optional["pd.DataFrame"] = None,
+    all_data_override: Optional[dict] = None,
+) -> tuple[dict, "pd.DataFrame"]:
     """Run the analysis pipeline.
 
     Steps:
@@ -159,19 +175,26 @@ async def _run_pipeline(req: ReportRequest) -> tuple[dict, "pd.DataFrame"]:
     from .window_intelligence import detect_phases, compute_report_priority
     from .models import Phase
 
-    # ── Step 1: Look up patient (client-scoped) ──────────────────────────
+    # ── Step 1: Look up patient (client-scoped or direct override) ───────
     req.patient_id = resolve_patient_id(req.patient_id)
-    client = _resolve_client(req.client, req.patient_id)
-    _is_mh = client_is_csv(client)   # clean-CSV (MedHab-shape) client → month flow
-    _mh_partial = False
-    # Privacy boundary: load ONLY the selected client's folder. A patient that
-    # belongs to another library is simply not present here → 404.
-    all_data = load_client_data(client)
-    if req.patient_id not in all_data:
-        raise HTTPException(status_code=404,
-            detail=f"Patient '{req.patient_id}' not found in library '{client}'.")
+    if df_override is not None:
+        df = df_override.copy()
+        all_data = all_data_override if all_data_override is not None else {req.patient_id: df}
+        _is_mh = False
+        _mh_partial = False
+    else:
+        client = _resolve_client(req.client, req.patient_id)
+        _is_mh = client_is_csv(client)   # clean-CSV (MedHab-shape) client → month flow
+        _mh_partial = False
+        # Privacy boundary: load ONLY the selected client's folder. A patient that
+        # belongs to another library is simply not present here → 404.
+        all_data = load_client_data(client)
+        if req.patient_id not in all_data:
+            raise HTTPException(status_code=404,
+                detail=f"Patient '{req.patient_id}' not found in library '{client}'.")
 
-    df = all_data[req.patient_id]
+        df = all_data[req.patient_id]
+
 
     # ── Step 2: Apply time window ────────────────────────────────────────
     from .window_intelligence import find_most_interesting_week
@@ -443,6 +466,26 @@ async def _run_pipeline(req: ReportRequest) -> tuple[dict, "pd.DataFrame"]:
     if snapshot_24h is not None:
         snapshot_24h["status_30d"] = triage
 
+    timeseries_data = []
+    if df is not None and not df.empty and "timestamp" in df.columns:
+        try:
+            sdf = df.sort_values("timestamp")
+            for _, r in sdf.iterrows():
+                ts_val = r["timestamp"]
+                ts_str = ts_val.isoformat() if hasattr(ts_val, "isoformat") else (str(ts_val) if pd.notna(ts_val) else "")
+                timeseries_data.append({
+                    "t": ts_str,
+                    "hr": round(float(r["hr_avg"]), 1) if pd.notna(r.get("hr_avg")) else None,
+                    "hr_min": round(float(r["hr_min"]), 1) if pd.notna(r.get("hr_min")) else None,
+                    "hr_max": round(float(r["hr_max"]), 1) if pd.notna(r.get("hr_max")) else None,
+                    "rr": round(float(r["rr_avg"]), 1) if pd.notna(r.get("rr_avg")) else None,
+                    "rr_min": round(float(r["rr_min"]), 1) if pd.notna(r.get("rr_min")) else None,
+                    "rr_max": round(float(r["rr_max"]), 1) if pd.notna(r.get("rr_max")) else None,
+                    "loc": str(r.get("location") or ""),
+                })
+        except Exception as ex:
+            print(f"DEBUG: timeseries extraction failed: {ex}")
+
     print(f"DEBUG PIPELINE: hr_stats is {hr_stats}")
     report_dict = {
         "patient_id": req.patient_id,
@@ -479,7 +522,9 @@ async def _run_pipeline(req: ReportRequest) -> tuple[dict, "pd.DataFrame"]:
         "sensor_type": sensor_type,
         "bed_summary": bed_summary_model.model_dump() if bed_summary_model else None,
         "chart_bed_hours_b64": chart_bed_hours_b64,
+        "chart_epd_b64": _generate_epd_b64(episodes, window_start, window_end, req.patient_id),
         "prior_comparison": prior_comparison.model_dump() if prior_comparison else None,
+        "timeseries": timeseries_data,
         # MedHab cohort: 30-day report label, partial-period note, end-of-period
         # clustering — mirrors the batch so the live preview matches the PDF.
         "report_label": "30DayPeriod" if _is_mh else "",
@@ -488,6 +533,18 @@ async def _run_pipeline(req: ReportRequest) -> tuple[dict, "pd.DataFrame"]:
             episodes, window_start_ts, window_end_ts),
     }
     return report_dict, df
+
+
+def _generate_epd_b64(episodes, window_start, window_end, patient_id=""):
+    """Generate the episodic events per day chart as base64 PNG for web preview."""
+    import base64
+    try:
+        png_bytes = generate_events_per_day_chart_for_pdf(
+            episodes, window_start, window_end,
+            patient_id=patient_id, fig_width_in=9.0, fig_height_in=1.8)
+        return base64.b64encode(png_bytes).decode("utf-8")
+    except Exception:
+        return ""
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
@@ -506,7 +563,7 @@ async def list_clients():
 
 
 @app.get("/api/summary")
-async def library_summary(client: str | None = None):
+async def library_summary(client: Optional[str] = None):
     """24h library summary — every patient in one library, critical first, 24h
     only. Same engine as the per-patient banner (statuses match). Scoped to a
     single client; never mixes libraries."""
@@ -527,7 +584,7 @@ async def library_summary(client: str | None = None):
 
 
 @app.get("/api/summary/pdf")
-async def library_summary_pdf(client: str | None = None):
+async def library_summary_pdf(client: Optional[str] = None):
     """Downloadable PDF of a library's 24h summary (same renderer as the batch)."""
     try:
         from datetime import datetime
@@ -552,7 +609,7 @@ async def library_summary_pdf(client: str | None = None):
 
 
 @app.get("/api/patients")
-async def list_patients_endpoint(client: str | None = None):
+async def list_patients_endpoint(client: Optional[str] = None):
     """Return the patient list for a library. ``?client=<id>`` scopes the list
     to exactly that client; omitting it defaults to the first discovered
     library. A patient from one library never appears under another."""
@@ -572,7 +629,7 @@ async def list_patients_endpoint(client: str | None = None):
 
 
 @app.get("/api/months")
-async def list_months(client: str | None = None):
+async def list_months(client: Optional[str] = None):
     """Available report months for a (CSV-shape) library, discovered from the
     data. Excel-shape libraries (e.g. PAM Health) report over rolling ranges,
     not months, so this returns an empty list and the UI shows range options."""
@@ -595,7 +652,7 @@ async def list_months(client: str | None = None):
 
 
 @app.get("/api/patients/{patient_id}/locations")
-async def patient_locations(patient_id: str, client: str | None = None):
+async def patient_locations(patient_id: str, client: Optional[str] = None):
     """Return the locations (Chair, Bed, Living Room) and date range for a patient.
 
     Enables the frontend to intelligently disable unavailable report types.
@@ -627,7 +684,7 @@ async def patient_locations(patient_id: str, client: str | None = None):
 
 
 @app.get("/api/patients/{patient_id}/interesting-week")
-async def interesting_week(patient_id: str, client: str | None = None):
+async def interesting_week(patient_id: str, client: Optional[str] = None):
     """Find the 7-day window with the highest clinical burden for a patient.
 
     Slides a 7-day window across the entire dataset, runs episode detection
@@ -654,7 +711,7 @@ async def report_preview(req: ReportRequest):
     """Generate and return the report as JSON for web preview."""
     req.patient_id = resolve_patient_id(req.patient_id)
     key = _cache_key(req)
-    if key in _report_cache:
+    if key in _report_cache and "chart_epd_b64" in _report_cache[key] and _report_cache[key]["chart_epd_b64"]:
         return _report_cache[key]
 
     report_dict, df = await _run_pipeline(req)
@@ -666,23 +723,23 @@ async def report_preview(req: ReportRequest):
 
 @app.post("/api/report/pdf")
 async def report_pdf(req: ReportRequest):
-    """Generate and return the PDF report."""
+    """Generate and return the PDF report (desktop or mobile compact)."""
     req.patient_id = resolve_patient_id(req.patient_id)
     from .pdf_render import _v
     report_obj, df = await _run_pipeline(req)
 
     episodes = _v(report_obj, "episodes", [])
-    pdf_bytes = generate_pdf(report_obj, df=df, episodes=episodes)
+    pdf_bytes = generate_pdf(report_obj, df=df, episodes=episodes, mobile=req.mobile)
 
     pid = _v(report_obj, "patient_id")
     ws = _v(report_obj, "window_start")
-    # Filename: CardioReport_<patient>_<Month_Year> (easy for users).
+    prefix = "CardioReport_Mobile_" if req.mobile else "CardioReport_"
     try:
         import pandas as _pd
         month_label = _pd.Timestamp(ws).strftime("%B_%Y") if ws else ""
     except Exception:
         month_label = ""
-    filename = f"CardioReport_{pid}_{month_label}.pdf" if month_label else f"CardioReport_{pid}.pdf"
+    filename = f"{prefix}{pid}_{month_label}.pdf" if month_label else f"{prefix}{pid}.pdf"
     
     return Response(
         content=pdf_bytes,
@@ -711,3 +768,10 @@ async def export_events(patient_id: str, range_type: Literal["last_24h", "last_7
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "version": settings.app_version}
+
+
+import os
+from fastapi.staticfiles import StaticFiles
+_frontend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend"))
+if os.path.exists(_frontend_dir):
+    app.mount("/", StaticFiles(directory=_frontend_dir, html=True), name="frontend")
