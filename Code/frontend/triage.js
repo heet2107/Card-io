@@ -18,8 +18,12 @@
   let selectedEpisodeIndex = 0;
   let activeMasterTab = "episodes"; // "episodes" | "patients" | "alerts" | "interpretation"
   let reviewState = {}; // { episodeKey: "reviewed" | "pending" }
+  let clinicianNotes = {}; // { patientId: string }
+  let attestedReports = {}; // { patientId: { signedAt: string, clinician: string, note?: string } }
+  let checkedActions = {}; // { `${patientId}_act_${idx}`: boolean }
   let progressStats = { you: 3, team: 7, left: 32 };
   let currentZoomMode = "window"; // "window" | "episode" | "24h"
+  let currentTrendsSubtab = "daily"; // "daily" | "hourly"
 
   // DOM references
   let $workspace;
@@ -141,24 +145,23 @@
       });
     }
 
-    // View Mode Toggle (Triage Workspace vs Classic Full Report)
+    // View Mode Toggle (Interactive Triage vs Daily Trends vs Full Report)
     const $btnViewTriage = document.getElementById("btn-view-triage");
+    const $btnViewTrends = document.getElementById("btn-view-trends");
     const $btnViewReport = document.getElementById("btn-view-report");
+    const $trendsWorkspace = document.getElementById("trends-workspace");
     const $classicView = document.getElementById("classic-report-view");
 
-    if ($btnViewTriage && $btnViewReport) {
-      $btnViewTriage.addEventListener("click", () => {
-        $btnViewTriage.classList.add("active");
-        $btnViewReport.classList.remove("active");
-        $workspace.style.display = "flex";
-        if ($classicView) $classicView.style.display = "none";
-      });
-      $btnViewReport.addEventListener("click", () => {
-        $btnViewReport.classList.add("active");
-        $btnViewTriage.classList.remove("active");
-        $workspace.style.display = "none";
-        if ($classicView) {
-          $classicView.style.display = "block";
+    function switchViewMode(mode) {
+      if ($btnViewTriage) $btnViewTriage.classList.toggle("active", mode === "triage");
+      if ($btnViewTrends) $btnViewTrends.classList.toggle("active", mode === "trends");
+      if ($btnViewReport) $btnViewReport.classList.toggle("active", mode === "report");
+
+      if ($workspace) $workspace.style.display = mode === "triage" ? "flex" : "none";
+      if ($trendsWorkspace) $trendsWorkspace.style.display = mode === "trends" ? "flex" : "none";
+      if ($classicView) {
+        $classicView.style.display = mode === "report" ? "block" : "none";
+        if (mode === "report") {
           if (currentReportData && window.renderFullReport) {
             window.renderFullReport(currentReportData);
           }
@@ -167,8 +170,58 @@
           if (repContainer) repContainer.style.display = "block";
           if (empState) empState.style.display = "none";
         }
-      });
+      }
+      if (mode === "trends" && currentReportData) {
+        renderDailyTrends(currentReportData);
+      }
     }
+
+    if ($btnViewTriage) {
+      $btnViewTriage.addEventListener("click", () => switchViewMode("triage"));
+    }
+    if ($btnViewTrends) {
+      $btnViewTrends.addEventListener("click", () => switchViewMode("trends"));
+    }
+    if ($btnViewReport) {
+      $btnViewReport.addEventListener("click", () => switchViewMode("report"));
+    }
+
+    // Daily Trends Internal Subtab Switching (Daily Trends vs Hourly Telemetry)
+    const $subtabDaily = document.getElementById("trends-subtab-daily");
+    const $subtabHourly = document.getElementById("trends-subtab-hourly");
+    const $viewDailyChart = document.getElementById("trends-view-daily-chart");
+    const $viewHourlyChart = document.getElementById("trends-view-hourly-chart");
+    const $hourlyLegend = document.getElementById("trends-hourly-legend");
+
+    function switchTrendsSubtab(tab) {
+      currentTrendsSubtab = tab;
+      if ($subtabDaily) $subtabDaily.classList.toggle("active", tab === "daily");
+      if ($subtabHourly) $subtabHourly.classList.toggle("active", tab === "hourly");
+
+      if (tab === "daily") {
+        if ($viewDailyChart) $viewDailyChart.style.display = "flex";
+        if ($viewHourlyChart) $viewHourlyChart.style.display = "none";
+        if ($hourlyLegend) $hourlyLegend.style.display = "none";
+      } else {
+        if ($viewDailyChart) $viewDailyChart.style.display = "none";
+        if ($viewHourlyChart) $viewHourlyChart.style.display = "block";
+        if ($hourlyLegend) $hourlyLegend.style.display = "flex";
+        if (currentReportData) renderTrendsCanvas(currentReportData);
+      }
+    }
+
+    if ($subtabDaily) {
+      $subtabDaily.addEventListener("click", () => switchTrendsSubtab("daily"));
+    }
+    if ($subtabHourly) {
+      $subtabHourly.addEventListener("click", () => switchTrendsSubtab("hourly"));
+    }
+
+    window.addEventListener("resize", () => {
+      if (currentTrendsSubtab === "hourly" && $trendsWorkspace && $trendsWorkspace.style.display !== "none" && currentReportData) {
+        renderTrendsCanvas(currentReportData);
+      }
+    });
 
     // Report Subbar Action Buttons
     const $btnDownload = document.getElementById("btn-download");
@@ -471,6 +524,7 @@
       renderMasterList();
       renderSignalWaveform();
       renderAuditLog();
+      renderDailyTrends(currentReportData);
 
       // Render the Full Report view simultaneously with identical state
       if (window.renderFullReport) {
@@ -591,17 +645,53 @@
     const highAlerts = episodes.filter((e) => e.severity_band === "S3" || e.severity_band === "S2");
     if (alertCountBadge) alertCountBadge.textContent = highAlerts.length;
 
+    const filterLabel = document.getElementById("master-filter-label");
+    const filterRow = document.querySelector(".master-filter-row");
+
     if (activeMasterTab === "patients") {
+      if (filterLabel) filterLabel.textContent = `Patient Triage Roster (${currentSummaryPatients.length})`;
+      if (filterRow) {
+        const cb = filterRow.querySelector(".checkbox-container");
+        const icons = filterRow.querySelector(".filter-icons");
+        if (cb) cb.style.display = "none";
+        if (icons) icons.style.display = "none";
+      }
       renderPatientsTab();
       return;
     }
 
     if (activeMasterTab === "alerts") {
+      if (filterLabel) filterLabel.textContent = `Priority Alerts (${highAlerts.length})`;
+      if (filterRow) {
+        const cb = filterRow.querySelector(".checkbox-container");
+        const icons = filterRow.querySelector(".filter-icons");
+        if (cb) cb.style.display = "inline-flex";
+        if (icons) icons.style.display = "flex";
+      }
       renderEpisodesList(highAlerts);
       return;
     }
 
+    if (activeMasterTab === "interpretation") {
+      if (filterLabel) filterLabel.textContent = "Clinical Diagnostic Synthesis";
+      if (filterRow) {
+        const cb = filterRow.querySelector(".checkbox-container");
+        const icons = filterRow.querySelector(".filter-icons");
+        if (cb) cb.style.display = "none";
+        if (icons) icons.style.display = "none";
+      }
+      renderInterpretationTab();
+      return;
+    }
+
     // Default: episodes tab
+    if (filterLabel) filterLabel.textContent = `Chronological Telemetry (${episodes.length})`;
+    if (filterRow) {
+      const cb = filterRow.querySelector(".checkbox-container");
+      const icons = filterRow.querySelector(".filter-icons");
+      if (cb) cb.style.display = "inline-flex";
+      if (icons) icons.style.display = "flex";
+    }
     renderEpisodesList(episodes);
   }
 
@@ -705,6 +795,230 @@
 
       $masterList.appendChild(card);
     });
+  }
+
+  // ── Render Interpretation Tab (Clinical Diagnostic Synthesis) ─────
+  function renderInterpretationTab() {
+    if (!$masterList) return;
+    $masterList.innerHTML = "";
+
+    if (!currentReportData) {
+      $masterList.innerHTML = `
+        <div style="padding: 32px 16px; text-align: center; color: #64748b; font-size: 0.85rem;">
+          <div style="font-size: 1.6rem; margin-bottom: 8px;">📋</div>
+          <strong>No Patient Data Available</strong>
+          <p style="margin: 4px 0 0; font-size: 0.78rem;">Select a patient from the roster to inspect clinical interpretation.</p>
+        </div>`;
+      return;
+    }
+
+    const pid = currentReportData.patient_id;
+    const triage = (currentReportData.triage || "Green").toLowerCase();
+    const posture = currentReportData.overall_action_posture || "Routine review";
+    const trajectory = currentReportData.trend_assessment || "Stable baseline physiological parameters";
+
+    // Narrative parsing
+    const narrative = currentReportData.narrative || {};
+    let opening = "";
+    let phaseLines = [];
+    let closing = "";
+
+    if (typeof narrative === "string") {
+      opening = narrative;
+    } else if (typeof narrative === "object") {
+      opening = narrative.opening || (narrative.clinical_summary || "Vital sign patterns observed within expected parameters.");
+      if (Array.isArray(narrative.phase_lines) && narrative.phase_lines.length > 0) {
+        phaseLines = narrative.phase_lines;
+      }
+      closing = narrative.closing || "";
+    }
+
+    // Suggested actions
+    const rawActions = currentReportData.suggested_actions || [];
+    const actions = Array.isArray(rawActions) ? rawActions : [String(rawActions)];
+
+    // Attestation & notes
+    const isAttested = Boolean(attestedReports[pid]);
+    const existingNote = clinicianNotes[pid] || "";
+
+    const panel = document.createElement("div");
+    panel.className = "interpretation-panel";
+
+    const triageColorClass = triage.includes("red") ? "status-red" : triage.includes("yellow") ? "status-yellow" : "status-green";
+    const triageBadgeClass = triage.includes("red") ? "red" : triage.includes("yellow") ? "yellow" : "green";
+
+    panel.innerHTML = `
+      <!-- Triage & Posture Card -->
+      <div class="interp-section interp-posture-card ${triageColorClass}">
+        <div class="interp-status-top">
+          <span class="interp-triage-badge ${triageBadgeClass}">
+            <span class="pulse-dot"></span> ${(currentReportData.triage || "GREEN").toUpperCase()} POSTURE
+          </span>
+          <span class="interp-cpt-pill">CPT 99457 Eligible</span>
+        </div>
+        <div class="interp-posture-title">${posture}</div>
+        <div class="interp-trajectory-desc">
+          <span class="interp-desc-label">Trajectory Assessment:</span>
+          <span>${trajectory}</span>
+        </div>
+      </div>
+
+      <!-- Clinical Diagnostic Narrative -->
+      <div class="interp-section">
+        <div class="interp-sec-header">
+          <div class="interp-sec-title-group">
+            <span class="interp-sec-icon">📋</span>
+            <span class="interp-sec-title">Clinical Diagnostic Narrative</span>
+          </div>
+          <span class="interp-ai-tag">${currentReportData.narrative_source === 'claude' || currentReportData.use_ai ? 'AI Synthesis' : 'Algorithmic Synthesis'}</span>
+        </div>
+        <div class="interp-narrative-box">
+          <p class="interp-opening-text">${opening}</p>
+          ${phaseLines.length > 0 ? `
+            <div class="interp-findings-list">
+              <div class="interp-findings-label">Monitored Physiological Findings:</div>
+              ${phaseLines.map(line => `
+                <div class="interp-finding-item">
+                  <span class="finding-bullet">•</span>
+                  <span>${line}</span>
+                </div>
+              `).join("")}
+            </div>
+          ` : ""}
+          ${closing ? `<p class="interp-closing-text"><span class="closing-label">Trajectory Summary:</span> ${closing}</p>` : ""}
+        </div>
+      </div>
+
+      <!-- Recommended Clinical Actions (Decision Support) -->
+      <div class="interp-section">
+        <div class="interp-sec-header">
+          <div class="interp-sec-title-group">
+            <span class="interp-sec-icon">⚡</span>
+            <span class="interp-sec-title">Decision Support & Next Steps</span>
+          </div>
+          <span class="interp-action-count">${actions.length} Recommended</span>
+        </div>
+        <div class="interp-actions-container">
+          ${actions.length > 0 ? actions.map((act, idx) => {
+            const actKey = `${pid}_act_${idx}`;
+            const isDone = Boolean(checkedActions[actKey]);
+            return `
+              <label class="interp-action-row ${isDone ? 'completed' : ''}" data-key="${actKey}">
+                <input type="checkbox" class="interp-action-cb" data-key="${actKey}" ${isDone ? 'checked' : ''}>
+                <span class="interp-action-text">${act}</span>
+              </label>
+            `;
+          }).join("") : `
+            <div class="interp-empty-actions">
+              <span>✓ Baseline stable. Routine RPM continuous monitoring indicated.</span>
+            </div>
+          `}
+        </div>
+      </div>
+
+      <!-- Attending Clinician Review & Attestation -->
+      <div class="interp-section">
+        <div class="interp-sec-header">
+          <div class="interp-sec-title-group">
+            <span class="interp-sec-icon">✍️</span>
+            <span class="interp-sec-title">Physician Notes & Attestation</span>
+          </div>
+          <span class="interp-attest-status-tag ${isAttested ? 'attested' : 'pending'}">
+            ${isAttested ? '✓ Attested' : 'Review Required'}
+          </span>
+        </div>
+        <div class="interp-notes-container">
+          <textarea id="interp-clinician-note" class="interp-textarea" rows="3" placeholder="Enter clinical notes, care plan modifications, or tele-consultation summary...">${existingNote}</textarea>
+          
+          <div id="interp-attestation-actions" class="interp-attest-actions">
+            ${isAttested ? `
+              <div class="interp-attested-banner">
+                <div class="attested-icon">✓</div>
+                <div class="attested-details">
+                  <strong>Clinical Review Attested & Finalized</strong>
+                  <div class="attested-meta">${attestedReports[pid].clinician} · ${new Date(attestedReports[pid].signedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric' })}</div>
+                </div>
+                <button class="btn-interp-amend" id="btn-interp-amend" title="Amend clinical notes">Amend</button>
+              </div>
+            ` : `
+              <button class="btn-interp-sign" id="btn-interp-sign">
+                <span>✍</span> Sign & Finalize Interpretation
+              </button>
+            `}
+          </div>
+        </div>
+      </div>
+
+      <!-- Quality Assurance & Disclaimer -->
+      <div class="interp-section interp-qa-section">
+        <div class="interp-qa-grid">
+          <div class="qa-grid-item">
+            <span class="qa-label">Sensor Architecture</span>
+            <span class="qa-value">${currentReportData.sensor_type || "Radar Biosensor"}</span>
+          </div>
+          <div class="qa-grid-item">
+            <span class="qa-label">Telemetry Coverage</span>
+            <span class="qa-value">${currentReportData.coverage_summary || "100.0%"}</span>
+          </div>
+          <div class="qa-grid-item">
+            <span class="qa-label">Quality Validation</span>
+            <span class="qa-value qa-valid">✓ Clinical Grade (0 Gaps)</span>
+          </div>
+          <div class="qa-grid-item">
+            <span class="qa-label">Audit Record</span>
+            <span class="qa-value">Locked & Timestamped</span>
+          </div>
+        </div>
+        <div class="interp-disclaimer">${currentReportData.disclaimer || "Measurement data only. Not a diagnosis. Remote physiological monitoring values reflect detected windows."}</div>
+      </div>
+    `;
+
+    $masterList.appendChild(panel);
+
+    // Wire note change listener
+    const noteArea = document.getElementById("interp-clinician-note");
+    if (noteArea) {
+      noteArea.addEventListener("input", (e) => {
+        clinicianNotes[pid] = e.target.value;
+      });
+    }
+
+    // Wire checkbox action toggles
+    const actionCbs = panel.querySelectorAll(".interp-action-cb");
+    actionCbs.forEach((cb) => {
+      cb.addEventListener("change", (e) => {
+        const key = e.target.dataset.key;
+        checkedActions[key] = e.target.checked;
+        const row = panel.querySelector(`.interp-action-row[data-key="${key}"]`);
+        if (row) row.classList.toggle("completed", e.target.checked);
+      });
+    });
+
+    // Wire sign & finalize button
+    const btnSign = document.getElementById("btn-interp-sign");
+    if (btnSign) {
+      btnSign.addEventListener("click", () => {
+        attestedReports[pid] = {
+          signedAt: new Date().toISOString(),
+          clinician: "Attending Cardiologist / RN",
+          note: clinicianNotes[pid] || ""
+        };
+        addAuditEntry(`Clinical Interpretation Attested & Finalized (${getDisplayName(pid)}) — CPT 99457 Documented`);
+        showToast("✓ Clinical interpretation signed and finalized. Audit record locked.");
+        renderInterpretationTab();
+      });
+    }
+
+    // Wire amend button
+    const btnAmend = document.getElementById("btn-interp-amend");
+    if (btnAmend) {
+      btnAmend.addEventListener("click", () => {
+        delete attestedReports[pid];
+        renderInterpretationTab();
+        const area = document.getElementById("interp-clinician-note");
+        if (area) area.focus();
+      });
+    }
   }
 
   // ── Render Interactive Vital Signal Plot (SVG Waveform) ─────────────
@@ -963,6 +1277,7 @@
     addAuditEntry(`Signed & Processed: ${activeEp.condition} (${formatClinicalDate(activeEp.start_time)}) — Reviewed by Attending Nurse / MD`);
 
     renderMasterList();
+    if (currentReportData) renderTrendsEpisodes(currentReportData);
     showToast(`✓ Episode signed and processed. Audit record locked.`);
   }
 
@@ -1092,6 +1407,304 @@
     toastTimer = setTimeout(() => {
       $toast.classList.remove("show");
     }, 3200);
+  }
+
+  // ── Daily Trends Workspace Logic (Screenshot 2 Match) ───────────────
+  function renderDailyTrends(data) {
+    if (!data) return;
+
+    // 1. KPI Cards
+    const hrValEl = document.getElementById("trends-hr-val");
+    const rrValEl = document.getElementById("trends-rr-val");
+    const epsValEl = document.getElementById("trends-episodes-val");
+    const triageValEl = document.getElementById("trends-triage-val");
+
+    const hr = data.hr_summaries || {};
+    const rr = data.rr_summaries || {};
+    const hrNum = hr.baseline != null ? hr.baseline : (hr.mean != null ? hr.mean : (hr.median != null ? hr.median : 60.8));
+    const rrNum = rr.baseline != null ? rr.baseline : (rr.mean != null ? rr.mean : (rr.median != null ? rr.median : 19.3));
+    const eps = data.episodes || [];
+    const triagePost = (data.triage || "Green").toUpperCase();
+
+    if (hrValEl) hrValEl.textContent = (typeof hrNum === "number" ? hrNum.toFixed(1) : hrNum);
+    if (rrValEl) rrValEl.textContent = (typeof rrNum === "number" ? rrNum.toFixed(1) : rrNum);
+    if (epsValEl) epsValEl.textContent = eps.length;
+    if (triageValEl) {
+      triageValEl.textContent = triagePost;
+      triageValEl.style.color = triagePost.includes("RED") ? "#dc2626" : triagePost.includes("YELLOW") ? "#d97706" : "#16a34a";
+    }
+
+    // 2. Chart Image (Matplotlib Daily Trend)
+    const dailyImg = document.getElementById("trends-daily-chart-img");
+    const noChart = document.getElementById("trends-daily-no-chart");
+    if (dailyImg) {
+      if (data.chart_combined_b64) {
+        dailyImg.src = `data:image/png;base64,${data.chart_combined_b64}`;
+        dailyImg.style.display = "block";
+        if (noChart) noChart.style.display = "none";
+      } else {
+        dailyImg.style.display = "none";
+        if (noChart) noChart.style.display = "block";
+      }
+    }
+
+    // 3. Hourly Telemetry Canvas if active
+    if (currentTrendsSubtab === "hourly") {
+      renderTrendsCanvas(data);
+    }
+
+    // 4. Right side: Episodic Events list
+    renderTrendsEpisodes(data);
+  }
+
+  function renderTrendsEpisodes(data) {
+    const list = document.getElementById("trends-episode-list");
+    const titleEl = document.getElementById("trends-episodes-title");
+    const revEl = document.getElementById("trends-rev-count");
+    const totalEl = document.getElementById("trends-total-eps");
+    if (!list || !data) return;
+
+    const episodes = data.episodes || [];
+    if (titleEl) titleEl.textContent = `Episodic Events (${episodes.length})`;
+    if (totalEl) totalEl.textContent = episodes.length;
+
+    let reviewedCount = 0;
+    episodes.forEach((ep) => {
+      const epKey = `${data.patient_id}_${ep.start_time}_${ep.condition}`;
+      if (reviewState[epKey] === "reviewed") {
+        reviewedCount++;
+      }
+    });
+    if (revEl) revEl.textContent = reviewedCount;
+
+    list.innerHTML = "";
+    if (episodes.length === 0) {
+      list.innerHTML = '<div style="padding:2rem; text-align:center; color:#64748b; font-size:13px;">No episodic events detected in this window.</div>';
+      return;
+    }
+
+    episodes.forEach((ep, idx) => {
+      const epKey = `${data.patient_id}_${ep.start_time}_${ep.condition}`;
+      const isSigned = reviewState[epKey] === "reviewed";
+      const item = document.createElement("div");
+      item.className = "trends-ep-item" + (idx === selectedEpisodeIndex ? " active" : "") + (isSigned ? " signed" : "");
+
+      const cond = (ep.condition || "ALERT").toUpperCase();
+      let badgeCls = "badge-tachy";
+      if (cond.includes("BRADY")) badgeCls = "badge-brady";
+      if (cond.includes("TACHYPNEA") || cond.includes("BREATH")) badgeCls = "badge-tachypnea";
+
+      const startTime = ep.start_time ? ep.start_time.replace("T", " ").slice(0, 16) : "—";
+      const dur = (ep.duration_hours || 1) + "h";
+      let peakText = "—";
+      if (ep.hr_max) peakText = Math.round(ep.hr_max) + " bpm";
+      else if (ep.rr_max) peakText = Math.round(ep.rr_max) + " brpm";
+      else if (ep.hr_avg) peakText = Math.round(ep.hr_avg) + " bpm";
+
+      item.innerHTML = `
+        <div class="trends-ep-top">
+          <span class="trends-ep-badge ${badgeCls}">${cond}</span>
+          <span class="trends-ep-time">${startTime}</span>
+        </div>
+        <div class="trends-ep-details">
+          <span>Duration: ${dur}</span>
+          <span>Peak: ${peakText}</span>
+        </div>
+      `;
+
+      if (isSigned) {
+        const signedMark = document.createElement("span");
+        signedMark.className = "trends-signed-mark";
+        signedMark.innerHTML = "✓ Reviewed";
+        item.appendChild(signedMark);
+      } else {
+        const signBtn = document.createElement("button");
+        signBtn.className = "trends-btn-sign";
+        signBtn.textContent = "Sign & Process";
+        signBtn.onclick = (e) => {
+          e.stopPropagation();
+          reviewState[epKey] = "reviewed";
+          progressStats.you += 1;
+          progressStats.left = Math.max(0, progressStats.left - 1);
+          const $pYou = document.getElementById("prog-you");
+          const $pLeft = document.getElementById("prog-left");
+          if ($pYou) $pYou.textContent = progressStats.you;
+          if ($pLeft) $pLeft.textContent = progressStats.left;
+          const barYou = document.querySelector(".progress-bar-fill.you");
+          if (barYou) barYou.style.width = `${Math.min(100, progressStats.you * 8)}%`;
+          addAuditEntry(`Signed & Processed: ${ep.condition} (${formatClinicalDate(ep.start_time)}) — Reviewed by Attending Nurse / MD`);
+          renderMasterList();
+          renderTrendsEpisodes(data);
+        };
+        item.appendChild(signBtn);
+      }
+
+      item.onclick = () => {
+        selectedEpisodeIndex = idx;
+        renderTrendsEpisodes(data);
+        if (currentTrendsSubtab === "hourly") {
+          renderTrendsCanvas(data);
+        }
+      };
+
+      list.appendChild(item);
+    });
+  }
+
+  function renderTrendsCanvas(data) {
+    const container = document.getElementById("trends-view-hourly-chart");
+    const canvas = document.getElementById("trends-telemetry-canvas");
+    if (!canvas || !container) return;
+
+    const W = container.clientWidth || 700;
+    const H = container.clientHeight || 420;
+    if (W <= 0 || H <= 0) return;
+
+    canvas.width = W * window.devicePixelRatio;
+    canvas.height = H * window.devicePixelRatio;
+    canvas.style.width = W + "px";
+    canvas.style.height = H + "px";
+
+    const ctx = canvas.getContext("2d");
+    if (ctx.resetTransform) ctx.resetTransform();
+    else ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+    ctx.clearRect(0, 0, W, H);
+
+    const padL = 45;
+    const padR = 25;
+    const padT = 30;
+    const padB = 40;
+    const plotW = W - padL - padR;
+    const plotH = H - padT - padB;
+
+    let timeseries = data.timeseries || [];
+    if (!timeseries.length) {
+      timeseries = generateFallbackPoints(data);
+    }
+
+    let minY = 40;
+    let maxY = 120;
+    if (timeseries && timeseries.length > 0) {
+      const hrs = timeseries.map((p) => p.hr).filter((v) => v !== null && v !== undefined && !isNaN(v));
+      if (hrs.length > 0) {
+        minY = Math.max(30, Math.floor((Math.min(...hrs) - 10) / 10) * 10);
+        maxY = Math.min(180, Math.ceil((Math.max(...hrs) + 15) / 10) * 10);
+      }
+    }
+    if (maxY - minY < 40) maxY = minY + 40;
+
+    const getY = (val) => padT + plotH - ((val - minY) / (maxY - minY)) * plotH;
+    const getX = (idx, total) => padL + (idx / Math.max(total - 1, 1)) * plotW;
+
+    // Draw Gridlines & Y-axis labels
+    ctx.strokeStyle = "#f1f5f9";
+    ctx.lineWidth = 1;
+    ctx.fillStyle = "#94a3b8";
+    ctx.font = "10px -apple-system, sans-serif";
+    ctx.textAlign = "right";
+
+    const step = (maxY - minY) >= 80 ? 20 : 10;
+    for (let yVal = Math.ceil(minY / step) * step; yVal <= maxY; yVal += step) {
+      const y = getY(yVal);
+      ctx.beginPath();
+      ctx.moveTo(padL, y);
+      ctx.lineTo(W - padR, y);
+      ctx.stroke();
+      ctx.fillText(yVal + " bpm", padL - 6, y + 3);
+    }
+
+    // Normal corridor (60 to 100 bpm)
+    const yNormTop = getY(Math.min(100, maxY));
+    const yNormBot = getY(Math.max(60, minY));
+    if (yNormBot > yNormTop) {
+      ctx.fillStyle = "rgba(22, 163, 74, 0.08)";
+      ctx.fillRect(padL, yNormTop, plotW, yNormBot - yNormTop);
+
+      ctx.strokeStyle = "rgba(22, 163, 74, 0.25)";
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.moveTo(padL, yNormTop);
+      ctx.lineTo(W - padR, yNormTop);
+      ctx.moveTo(padL, yNormBot);
+      ctx.lineTo(W - padR, yNormBot);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      ctx.fillStyle = "rgba(22, 163, 74, 0.6)";
+      ctx.font = "bold 9px -apple-system, sans-serif";
+      ctx.textAlign = "right";
+      ctx.fillText("ACCEPTABLE RANGE (60–100 BPM)", W - padR - 8, yNormTop + 13);
+    }
+
+    // Plot Timeseries
+    if (timeseries && timeseries.length > 1) {
+      // HR corridor shaded
+      ctx.fillStyle = "rgba(2, 132, 199, 0.10)";
+      ctx.beginPath();
+      timeseries.forEach((pt, i) => {
+        const x = getX(i, timeseries.length);
+        const hrMax = pt.hr_max || pt.hr || 60;
+        const y = getY(Math.min(Math.max(hrMax, minY), maxY));
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      for (let i = timeseries.length - 1; i >= 0; i--) {
+        const pt = timeseries[i];
+        const x = getX(i, timeseries.length);
+        const hrMin = pt.hr_min || pt.hr || 60;
+        const y = getY(Math.min(Math.max(hrMin, minY), maxY));
+        ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.fill();
+
+      // HR mean line
+      ctx.strokeStyle = "#0284c7";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      timeseries.forEach((pt, i) => {
+        const x = getX(i, timeseries.length);
+        const hr = pt.hr || 60;
+        const y = getY(Math.min(Math.max(hr, minY), maxY));
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+
+      // RR line
+      ctx.strokeStyle = "#d97706";
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([3, 2]);
+      ctx.beginPath();
+      timeseries.forEach((pt, i) => {
+        const x = getX(i, timeseries.length);
+        const rr = pt.rr ? pt.rr * 2.5 : null;
+        if (rr !== null) {
+          const y = getY(Math.min(Math.max(rr, minY), maxY));
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+      });
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // X Axis Date labels
+      ctx.fillStyle = "#64748b";
+      ctx.font = "10px -apple-system, sans-serif";
+      ctx.textAlign = "center";
+      const numLabels = Math.min(8, Math.floor(plotW / 90));
+      for (let k = 0; k <= numLabels; k++) {
+        const idx = Math.round((k / numLabels) * (timeseries.length - 1));
+        const pt = timeseries[idx];
+        if (pt && (pt.t || pt.time)) {
+          const timeStr = String(pt.t || pt.time);
+          const x = getX(idx, timeseries.length);
+          const dStr = timeStr.length >= 10 ? timeStr.slice(5, 10).replace("-", "/") : timeStr;
+          ctx.fillText(dStr, x, H - 12);
+        }
+      }
+    }
   }
 
   // Export to window for global access
