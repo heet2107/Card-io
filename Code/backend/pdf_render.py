@@ -2049,8 +2049,14 @@ def _event_card(r, st, page_w):
     return card
 
 
-def _build_report_story_redesign(report, st, page_w):
-    """Assemble the redesigned single-page report body."""
+def _build_report_story_redesign(report, st, page_w, full_episodes=None):
+    """Assemble the redesigned single-page report body.
+
+    ``full_episodes`` is the FULL detected episode list (the one ``generate_pdf``
+    receives). It MUST stay distinct from the local ``episodes`` below, which is
+    ``report['episodes']`` — a capped list. The per-day chart needs the full list
+    or it undercounts bars; only the stat-tile fallback uses the capped one.
+    """
     import pandas as _pd
     from .config import THRESHOLD_LEGEND_COLORS as _TLC, RENDER_CONFIG as _RC
 
@@ -2221,7 +2227,11 @@ def _build_report_story_redesign(report, st, page_w):
     els.append(box_tbl)
     els.append(Spacer(1, 6))
 
-    # ── 8. Thick separator → 9. Patient status band over the period ──────────
+    # ── 8. Thick separator → 9. Status heading over the period ───────────────
+    # (R30 reorder) The order under this 'Last N days' heading is now:
+    #   1) Episodic events per day chart  2) Measured windows  3) color bar
+    #   4) Heart-rate P5-P95 stat tiles.
+    # Only the block ORDER changed — every block is the same, unchanged.
     els.append(_thick_sep())
     phases = _v(report, "phases", []) or []
     display_phases = [p for p in phases if PHASE_LABELS.get(_v(p, 'type', 'normal')) is not None]
@@ -2231,11 +2241,18 @@ def _build_report_story_redesign(report, st, page_w):
         _days = None
     if display_phases and _days:
         els.append(_render_status_heading_with_index(report, _days, page_w, st))
-        els.append(Spacer(1, 4))   # breathing room between the heading and the bar
-        bar = render_phase_blocks_bar(display_phases, page_w / inch, st)
-        if bar is not None:
-            els.append(bar)
+        els.append(Spacer(1, 4))
+
+    # ── 10. Episodic events per day chart + Notable Days panel ───────────────
+    # Moved directly under the heading (was previously appended at the very
+    # bottom of page 1). Same region, same data, same styling.
+    try:
+        els.extend(_build_events_and_notable_region(report, full_episodes, st, page_w))
         els.append(Spacer(1, 6))
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception(
+            "events/notable region failed for %s", _v(report, 'patient_id'))
 
     # ── 11. Episodic events, measurement data — boxed cards, top 4 ───────────
     els.append(Paragraph("Measured windows", st['section_head']))
@@ -2249,7 +2266,15 @@ def _build_report_story_redesign(report, st, page_w):
         els.append(Spacer(1, 4))
     if len(rows) > len(ranked):
         els.append(Paragraph(f"<i>plus {len(rows) - len(ranked)} more windows</i>", st['legend']))
-    els.append(Spacer(1, 9))
+    els.append(Spacer(1, 6))
+
+    # ── 12. Color bar — patient status band over the period. (R30 reorder:
+    # moved below Measured windows.) Same phase-blocks bar, unchanged. ────────
+    if display_phases and _days:
+        bar = render_phase_blocks_bar(display_phases, page_w / inch, st)
+        if bar is not None:
+            els.append(bar)
+        els.append(Spacer(1, 6))
 
     # ── Stat-tile row — supporting context at the BOTTOM, rendered small so the
     # episodic events dominate the page (client markup: "Move this here, and
@@ -2292,7 +2317,7 @@ def _caveat_text(report):
     coverage sentence carrying this report's signal coverage."""
     disclaimer = str(_v(report, 'disclaimer', '') or '')
     dq = _v(report, 'data_quality', {}) or {}
-    cov_pct = dq.get('coverage_pct')
+    cov_pct = _v(dq, 'coverage_pct', None)
     cov_sentence = ""
     if cov_pct is not None:
         cov_sentence = (f" Signal coverage {cov_pct:.0f}%; interpret windows during "
@@ -2454,16 +2479,162 @@ def _build_events_and_notable_region(report, episodes, st, page_w):
     return els
 
 
-def generate_pdf(report: ReportResponse, df=None, episodes=None,
-                 one_page_only: bool = False) -> bytes:
-    """Build the patient PDF report (redesign, July 14).
-
-    Page 1 is the approved summary (header, stat tiles, Last 24 hours box,
-    narrative episodic events, measured-windows band, inline clinical review).
-    Page 2 restores the trend and distribution graphs, restyled to the light
-    theme and family colors, with the thresholds legend at its bottom. The
-    full-episode appendix stays removed; there is no third page.
+def generate_mobile_pdf(report: ReportResponse, df=None, episodes=None) -> bytes:
+    """Build a simplified mobile-first single-page report PDF.
+    Order:
+      1. Compact Mobile Header (Patient, Triage badge, Period, Coverage).
+      2. Main Vital Sign Trend Plot FIRST.
+      3. Summary Statistics Table SECOND (HR & RR Mean, Min, Max, P5, P95).
+      4. Clinical Action Posture Banner.
+      5. Minimal Disclaimer Footer.
+    Side panels and detailed tabular appendices are omitted for phone screen readability.
     """
+    buf = io.BytesIO()
+    st = _styles()
+    _pid = _v(report, 'patient_id', 'Patient')
+    try:
+        import pandas as _pd
+        _ws = _v(report, 'window_start', '')
+        _mlabel = _pd.Timestamp(_ws).strftime('%B %Y') if _ws else ''
+    except Exception:
+        _mlabel = ''
+    _doc_title = f"CardioReport Mobile {_pid}" + (f" {_mlabel}" if _mlabel else "")
+
+    doc = SimpleDocTemplate(
+        buf, pagesize=letter,
+        leftMargin=0.4 * inch, rightMargin=0.4 * inch,
+        topMargin=0.35 * inch, bottomMargin=0.35 * inch,
+        title=_doc_title, author="CardioReport Mobile",
+    )
+    page_w = letter[0] - 0.8 * inch
+
+    elements = []
+
+    # 1. Header with Triage badge & Metadata
+    triage_str = (str(_v(report, 'triage', 'GREEN'))).upper()
+    triage_fg = _RED_TEXT if 'RED' in triage_str else (_AMBER_TEXT if 'YELLOW' in triage_str else _GREEN_TEXT)
+    
+    triage_badge_html = f'<font color="{triage_fg.hexval()}"><b>{triage_str}</b></font>'
+
+    header_data = [
+        [
+            Paragraph(f"<b>CardioReport Mobile Intelligence</b><br/><font color='#6B7280' size='8'>Patient ID: {_pid} | Coverage: {_v(report, 'coverage_summary', '—')}</font>", st["body"]),
+            Paragraph(f"<para align='right'><font size='10'><b>Triage:</b> {triage_badge_html}</font></para>", st["body"])
+        ]
+    ]
+    header_table = Table(header_data, colWidths=[page_w * 0.70, page_w * 0.30])
+    header_table.setStyle(TableStyle([
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ('TOPPADDING', (0, 0), (-1, -1), 0),
+        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+    ]))
+    elements.append(header_table)
+    elements.append(HRFlowable(width="100%", thickness=1, color=_BRAND_BLUE, spaceBefore=4, spaceAfter=8))
+
+    # 2. MAIN VITAL TREND PLOT FIRST
+    elements.append(Paragraph("<b>1. Vital Sign Trend Plot</b>", st["section_head"]))
+    elements.append(Spacer(1, 4))
+    if df is not None:
+        try:
+            candle_bytes = generate_candlestick_for_pdf(
+                df, _v(report, 'episodes', []) or [], phases=_v(report, 'phases', None),
+                window_start=_v(report, 'window_start'), window_end=_v(report, 'window_end')
+            )
+            elements.append(Image(io.BytesIO(candle_bytes), width=page_w, height=2.6 * inch))
+        except Exception:
+            elements.append(Paragraph("<i>Trend plot unavailable for selected window.</i>", st["body"]))
+    else:
+        elements.append(Paragraph("<i>Trend plot data unavailable.</i>", st["body"]))
+
+    elements.append(Spacer(1, 10))
+
+    # 3. SUMMARY STATS SECOND
+    elements.append(Paragraph("<b>2. Summary Statistics</b>", st["section_head"]))
+    elements.append(Spacer(1, 4))
+    
+    stats_data = [["Metric", "Mean", "Min", "Max", "P5", "P95"]]
+    hr_summ = _v(report, 'hr_summaries', None)
+    if hr_summ:
+        stats_data.append([
+            "Heart Rate (bpm)",
+            f"{_v(hr_summ, 'mean', 0):.1f}",
+            f"{_v(hr_summ, 'min', 0):.1f}",
+            f"{_v(hr_summ, 'max', 0):.1f}",
+            f"{_v(hr_summ, 'p5', 0):.1f}",
+            f"{_v(hr_summ, 'p95', 0):.1f}",
+        ])
+    rr_summ = _v(report, 'rr_summaries', None)
+    if rr_summ:
+        stats_data.append([
+            "Breathing Rate (brpm)",
+            f"{_v(rr_summ, 'mean', 0):.1f}",
+            f"{_v(rr_summ, 'min', 0):.1f}",
+            f"{_v(rr_summ, 'max', 0):.1f}",
+            f"{_v(rr_summ, 'p5', 0):.1f}",
+            f"{_v(rr_summ, 'p95', 0):.1f}",
+        ])
+
+    col_w = page_w / 6.0
+    stats_table = Table(stats_data, colWidths=[col_w * 1.5] + [col_w * 0.9] * 5)
+    stats_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), _BRAND_BLUE),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('ALIGN', (0, 0), (0, -1), 'LEFT'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 8),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('GRID', (0, 0), (-1, -1), 0.5, _BORDER),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, _LIGHT_BG]),
+    ]))
+    elements.append(stats_table)
+    elements.append(Spacer(1, 10))
+
+    # 4. CLINICAL POSTURE BANNER
+    trend_val = _v(report, 'trend_assessment', 'Stable')
+    posture_val = _v(report, 'overall_action_posture', 'Routine review')
+    banner_text = f"<b>Trend Assessment:</b> {trend_val} &nbsp;&nbsp;|&nbsp;&nbsp; <b>Action Posture:</b> {posture_val}"
+    
+    posture_table = Table([[Paragraph(banner_text, st["body"])]], colWidths=[page_w])
+    posture_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), _LIGHT_BG),
+        ('BOX', (0, 0), (-1, -1), 1, _BORDER),
+        ('PADDING', (0, 0), (-1, -1), 6),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+    ]))
+    elements.append(posture_table)
+
+    caveat = _caveat_text(report)
+    foot_style = ParagraphStyle('mob_footcanvas', parent=st['disclaimer'], fontSize=6.5, leading=8.5, textColor=_GRAY_TEXT)
+    def _draw_footer(canvas, _doc):
+        if caveat:
+            para = Paragraph(_html.escape(caveat), foot_style)
+            w, h = para.wrap(page_w, 40)
+            x = 0.4 * inch
+            y = 0.3 * inch
+            canvas.saveState()
+            canvas.setStrokeColor(_BORDER)
+            canvas.setLineWidth(0.5)
+            canvas.line(x, y + h + 2, x + page_w, y + h + 2)
+            para.drawOn(canvas, x, y)
+            canvas.restoreState()
+
+    doc.build(elements, onFirstPage=_draw_footer, onLaterPages=(lambda c, d: None))
+    buf.seek(0)
+    return buf.read()
+
+
+def generate_pdf(report: ReportResponse, df=None, episodes=None,
+                 one_page_only: bool = False, mobile: bool = False) -> bytes:
+    """Build the patient PDF report (redesign, July 14). If mobile=True,
+    generates a simplified mobile-first single-page PDF.
+    """
+    if mobile or _v(report, 'mobile', False):
+        return generate_mobile_pdf(report, df=df, episodes=episodes)
+
     buf = io.BytesIO()
     st = _styles()
     _pid = _v(report, 'patient_id', 'Patient')
@@ -2481,17 +2652,13 @@ def generate_pdf(report: ReportResponse, df=None, episodes=None,
         title=_doc_title, author="CardioReport",
     )
     page_w = letter[0] - 1.0 * inch
-    elements = _build_report_story_redesign(report, st, page_w)
-    # R29 redesign — the 'Episodic events per day' plot + NOTABLE DAYS panel sit
-    # at the bottom of page 1 on EVERY report (both cohorts, all report types). A
-    # region edge case degrades to "report without the region" rather than failing
-    # the whole patient's PDF.
-    try:
-        elements.extend(_build_events_and_notable_region(report, episodes, st, page_w))
-    except Exception:
-        import logging
-        logging.getLogger(__name__).exception(
-            "events/notable region failed for %s", _v(report, 'patient_id'))
+    # R30 reorder — the 'Episodic events per day' plot + NOTABLE DAYS panel now
+    # sit directly under the 'Last N days' heading (above Measured windows and
+    # the color bar), rendered inside _build_report_story_redesign. Passing the
+    # full ``episodes`` list keeps the per-day counts uncapped. A region edge case
+    # degrades to "report without the region" rather than failing the PDF (handled
+    # inside the builder).
+    elements = _build_report_story_redesign(report, st, page_w, episodes)
     # Page 2 graphs — only when hourly data is available (always, in batch runs).
     if df is not None and not one_page_only:
         elements.extend(_build_page2_elements(report, df, st, page_w))

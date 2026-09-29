@@ -26,6 +26,7 @@ class ReportRequest(BaseModel):
     month: Optional[str] = None  # MedHab month key, e.g. "2026-04" (range_type="month")
     client: Optional[str] = None  # Client/library id, e.g. "medhab" / "pam_health" (Round 28)
     use_ai: bool = False         # Toggle AI-powered narrative
+    mobile: bool = False         # Toggle Mobile compact layout format
 
 
 # ── Domain Objects ───────────────────────────────────────────────────────────
@@ -223,3 +224,6 @@ class ReportResponse(BaseModel):
     chart_positional_b64: str = ""  # positional comparison chart
     chart_activity_b64: str = ""   # activity trend chart
     chart_bed_hours_b64: str = ""  # bed hours chart (bed sensor only)
+    chart_epd_b64: str = ""        # events per day chart
+    timeseries: list[dict] = []    # interactive trace points
+

@@ -15,127 +15,359 @@
       rel="stylesheet"
     />
     <link rel="stylesheet" href="style.css?v=1.0.5" />
+    <link rel="stylesheet" href="triage.css?v=1.0.1" />
+    <script>
+      window.__js_errors = [];
+      window.onerror = function (msg, url, line, col, error) {
+        var errStr = msg + " (at " + (url || "").split("/").pop() + ":" + line + ":" + col + ")";
+        window.__js_errors.push(errStr);
+        console.error("PAGE ERROR:", errStr);
+        var banner = document.getElementById("js-error-banner");
+        if (!banner) {
+          banner = document.createElement("div");
+          banner.id = "js-error-banner";
+          banner.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:999999;background:#b91c1c;color:#fff;padding:8px 16px;font-size:13px;font-weight:600;";
+          document.body.appendChild(banner);
+        }
+        banner.textContent = "JavaScript Error: " + errStr;
+      };
+    </script>
   </head>
   <body>
-    <!-- ═══════════════════════════════════════════════════════════════ -->
-    <!-- TOP NAV                                                       -->
-    <!-- ═══════════════════════════════════════════════════════════════ -->
-    <nav id="topnav">
-      <div class="nav-brand">
-        <svg
-          class="nav-logo"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-        >
-          <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
-        </svg>
-        <span class="nav-title">CardioReport</span>
-        <span class="nav-badge">Clinical Intelligence</span>
-      </div>
-      <div class="nav-meta">
-        <span class="nav-version">v1.0</span>
-      </div>
-    </nav>
+    <div id="app-layout">
+      <!-- ════════ MAIN VIEWPORT ════════ -->
+      <div class="triage-main-viewport" id="triage-main-viewport">
+        <!-- TOPBAR -->
+        <header class="triage-topbar" id="triage-topbar">
+          <div class="patient-card-header">
+            <div class="patient-avatar-box">
+              <div class="patient-avatar-img" id="triage-patient-avatar">JB</div>
+            </div>
+            <div class="patient-id-info">
+              <div class="patient-name-row">
+                <h2 id="triage-patient-name" class="patient-name">Loading patient…</h2>
+                <span class="patient-mrn" id="triage-patient-mrn">MR# MR1000000</span>
+                <span class="patient-status-pill red" id="triage-patient-status">● HIGH</span>
+              </div>
+              <div class="patient-meta-tags">
+                <span id="triage-patient-demographics">Bed & Chair Radar · 24h Continuous</span>
+                <span class="meta-dot">·</span>
+                <span>Next OV: <strong id="triage-next-ov">03/15/2026</strong></span>
+                <span class="meta-dot">·</span>
+                <span>Caregiver: <strong id="triage-caregiver">Doctor Nora</strong></span>
+              </div>
+            </div>
+          </div>
 
+          <!-- Center Global Filters & The Triage Button -->
+          <div class="triage-global-controls">
+            <div class="triage-control-item">
+              <label for="triage-client-select">Library</label>
+              <select id="triage-client-select" class="triage-select">
+                <option value="">Loading…</option>
+              </select>
+            </div>
+            <div class="triage-control-item">
+              <label for="triage-patient-select">Patient</label>
+              <select id="triage-patient-select" class="triage-select">
+                <option value="">Loading…</option>
+              </select>
+            </div>
+            <div class="triage-control-item">
+              <label for="triage-window-select">Time Window</label>
+              <select id="triage-window-select" class="triage-select">
+                <option value="last_24h">Last 24 Hours</option>
+                <option value="last_7d" selected>Last 7 Days</option>
+                <option value="last_15d">Last 15 Days</option>
+                <option value="last_1m">Last 1 Month</option>
+                <option value="last_3m">Last 3 Months</option>
+                <option value="smart_week">Most Critical Week</option>
+              </select>
+            </div>
+            <!-- The Triage Priority Button -->
+            <button id="btn-triage-priority" class="btn-triage-toggle active" title="Toggle Triage Sorting: Critical/Red patients to the top">
+              <span class="triage-icon">⚡</span>
+              <span class="triage-label">Triage Priority</span>
+              <span class="triage-state-pill" id="triage-state-pill">ON (Reds First)</span>
+            </button>
+          </div>
+
+          <!-- Right: Daily Progress Tracker & View Switcher -->
+          <div class="triage-header-right">
+            <div class="progress-today-card" title="Review progress today across your clinical care team">
+              <div class="progress-text-row">
+                <span class="progress-title">Progress (today)</span>
+                <span class="progress-counts">
+                  You: <strong id="prog-you">3</strong> &nbsp;
+                  Team: <strong id="prog-team">7</strong> &nbsp;
+                  Left: <strong id="prog-left">32</strong>
+                </span>
+              </div>
+              <div class="progress-bar-track">
+                <div class="progress-bar-fill you" style="width: 25%"></div>
+                <div class="progress-bar-fill team" style="width: 35%"></div>
+              </div>
+            </div>
+            <div class="view-mode-toggle">
+              <button id="btn-view-triage" class="mode-btn active" title="Interactive Triage Workspace (Heart+ Reviews)">
+                ⚡ Interactive Triage
+              </button>
+              <button id="btn-view-trends" class="mode-btn" title="Daily Vital Sign Trends & Telemetry">
+                📊 Daily Trends
+              </button>
+              <button id="btn-view-report" class="mode-btn" title="Formal PDF Report Document View">
+                📑 Full Report
+              </button>
+            </div>
+          </div>
+        </header>
+
+        <!-- ════════ 1. INTERACTIVE TRIAGE WORKSPACE (91.LIFE INSPIRED) ════════ -->
+        <main class="triage-workspace-body" id="triage-workspace">
+          <!-- Master Column (Left) -->
+          <div class="triage-master-col">
+            <div class="master-tabs">
+              <button class="m-tab" id="mtab-alerts">Alerts <span class="badge" id="alerts-count">0</span></button>
+              <button class="m-tab active" id="mtab-episodes">Episodes <span class="badge" id="episodes-count">0</span></button>
+              <button class="m-tab" id="mtab-patients">Patients <span class="badge" id="patients-count">0</span></button>
+              <button class="m-tab" id="mtab-interpretation">Interpretation</button>
+            </div>
+            <div class="master-filter-row">
+              <label class="checkbox-container">
+                <input type="checkbox" id="select-all-episodes" checked>
+                <span class="checkmark"></span>
+              </label>
+              <span class="filter-count-label" id="master-filter-label">Chronological Telemetry</span>
+              <div class="filter-icons">
+                <button class="icon-btn" id="btn-sort-episodes" title="Sort Order">⇅</button>
+                <button class="icon-btn" id="btn-filter-episodes" title="Filter Episodes">⛛</button>
+              </div>
+            </div>
+            <div class="master-list-container" id="master-list-container">
+              <!-- Dynamically populated episode cards or patient triage rows -->
+            </div>
+          </div>
+
+          <!-- Detail Column (Right) -->
+          <div class="triage-detail-col">
+            <!-- Context strip -->
+            <div class="detail-context-strip">
+              <div class="context-left-badges">
+                <span class="status-chip active-sensor" id="sensor-active-badge">
+                  <span class="pulse-dot"></span> RADAR ACTIVE
+                </span>
+                <span class="status-chip remote">REMOTE RPM</span>
+                <span class="context-date" id="detail-context-date">Monitoring Window</span>
+                <span class="severity-badge red" id="detail-severity-badge">● HIGH</span>
+                <span class="status-chip afib-badge" id="detail-coupling-badge" style="display: none;">COUPLING DETECTED</span>
+              </div>
+              <div class="context-right-info">
+                <span class="next-sched">Next Scheduled: <strong id="detail-next-scheduled">03/15/2026</strong></span>
+                <button class="btn-icon-ghost" title="Share event">🔗</button>
+                <button class="btn-icon-ghost" title="Add bookmark">⭐</button>
+              </div>
+            </div>
+
+            <!-- Signal Workspace Card -->
+            <div class="signal-workspace-card">
+              <div class="signal-header">
+                <div class="signal-title-area">
+                  <h3 class="signal-title" id="selected-episode-title">Physiological Vital Sign Trace</h3>
+                  <span class="signal-time-range" id="selected-episode-timerange">Continuous 24h/7d sensor telemetry</span>
+                </div>
+                <div class="signal-zoom-controls">
+                  <button class="zoom-btn active" data-zoom="window">Full Window</button>
+                  <button class="zoom-btn" data-zoom="episode">Focus Episode</button>
+                  <button class="zoom-btn" data-zoom="24h">24h Zoom</button>
+                </div>
+              </div>
+
+              <!-- Interactive Dynamic Waveform SVG -->
+              <div class="signal-plot-wrapper" id="signal-plot-wrapper">
+                <svg id="interactive-signal-svg" class="interactive-signal-svg"></svg>
+                <div class="signal-hover-tooltip" id="signal-tooltip" style="display: none;"></div>
+              </div>
+
+              <div class="signal-legend-strip">
+                <div class="legend-item"><span class="legend-swatch hr-line"></span> Heart Rate (bpm)</div>
+                <div class="legend-item"><span class="legend-swatch hr-corridor"></span> HR Normal (60–100 bpm)</div>
+                <div class="legend-item"><span class="legend-swatch rr-line"></span> Respiration Rate (brpm)</div>
+                <div class="legend-item"><span class="legend-swatch episode-marker"></span> Episode Window</div>
+              </div>
+            </div>
+
+            <!-- Hardware & Telemetry Status Strip -->
+            <div class="device-status-strip">
+              <div class="device-info-left">
+                <span class="device-model-label">SENSOR</span>
+                <strong id="device-model-name">CardioMat BCG Radar (Bed Mat)</strong>
+                <span class="device-location-badge" id="device-location-badge">Continuous Telemetry</span>
+              </div>
+              <div class="device-battery-box">
+                <span class="battery-pill" id="device-battery">95%</span>
+              </div>
+              <div class="device-telemetry">
+                <span>Status: <strong class="text-green" id="device-status" style="color: #16a34a;">OK</strong></span>
+                <span class="telemetry-divider">|</span>
+                <span>Confidence: <strong id="device-confidence">98.4%</strong></span>
+                <span class="telemetry-divider">|</span>
+                <span>Coverage: <strong id="device-coverage">23.8h / 24h</strong></span>
+              </div>
+            </div>
+
+            <!-- Action Toolbar -->
+            <div class="triage-action-bar">
+              <div class="action-left">
+                <button class="btn btn-outline" id="btn-triage-archive">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="21 8 21 21 3 21 3 8"></polyline><rect x="1" y="3" width="22" height="5"></rect><line x1="10" y1="12" x2="14" y2="12"></line></svg>
+                  Archive
+                </button>
+                <button class="btn btn-outline" id="btn-triage-pdf" title="Download Official Clinical PDF Report">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>
+                  PDF Report
+                </button>
+              </div>
+              <div class="action-right">
+                <button class="btn btn-sign-process" id="btn-sign-process">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                  Sign and Process
+                </button>
+              </div>
+            </div>
+
+            <!-- Bottom Collapsible TSM Drawer -->
+            <div class="triage-bottom-drawer" id="triage-bottom-drawer">
+              <div class="drawer-header" id="drawer-toggle">
+                <div class="drawer-title">
+                  <span>TSM History & Clinical Audit Trail</span>
+                  <span class="drawer-badge">Billing: CPT 99457 Eligible</span>
+                </div>
+                <button class="drawer-arrow">▲</button>
+              </div>
+              <div class="drawer-content" id="drawer-content">
+                <div class="audit-trail-timeline" id="audit-trail-timeline">
+                  <!-- Audit entries populated by triage.js -->
+                </div>
+              </div>
+            </div>
+          </div>
+        </main>
+
+        <!-- ════════ 2. DAILY TRENDS WORKSPACE ════════ -->
+        <div class="trends-workspace-body" id="trends-workspace" style="display: none;">
+          <!-- 4 Top KPI Stat Cards (Screenshot 2 Match) -->
+          <div class="trends-stats-row">
+            <div class="trends-stat-card">
+              <div class="trends-stat-label">Baseline Heart Rate</div>
+              <div class="trends-stat-val"><span id="trends-hr-val">—</span> <span class="trends-stat-unit">bpm</span></div>
+              <div class="trends-stat-sub">Normal Corridor: 60–100 bpm</div>
+            </div>
+            <div class="trends-stat-card">
+              <div class="trends-stat-label">Baseline Respiration</div>
+              <div class="trends-stat-val"><span id="trends-rr-val">—</span> <span class="trends-stat-unit">brpm</span></div>
+              <div class="trends-stat-sub">Normal Corridor: 12–20 brpm</div>
+            </div>
+            <div class="trends-stat-card">
+              <div class="trends-stat-label">Episodic Events</div>
+              <div class="trends-stat-val" id="trends-episodes-val">0</div>
+              <div class="trends-stat-sub">Burst-clustered & filtered</div>
+            </div>
+            <div class="trends-stat-card">
+              <div class="trends-stat-label">Triage Posture</div>
+              <div class="trends-stat-val" id="trends-triage-val" style="color: #16a34a">GREEN</div>
+              <div class="trends-stat-sub">Automated Clinical Classification</div>
+            </div>
+          </div>
+
+          <!-- Triage Grid: Chart Left, Episodes Right -->
+          <div class="trends-grid">
+            <!-- Telemetry & Clinical Trend Chart Card -->
+            <div class="trends-chart-card">
+              <div class="trends-card-head">
+                <div class="trends-title-group">
+                  <div class="trends-card-title">Vital Sign Trends & Telemetry</div>
+                  <div class="trends-subtabs">
+                    <button id="trends-subtab-daily" class="trends-subtab active">📊 Daily Trends</button>
+                    <button id="trends-subtab-hourly" class="trends-subtab">⚡ Hourly Telemetry</button>
+                  </div>
+                </div>
+                <!-- Hourly Legend (shown in hourly view) -->
+                <div id="trends-hourly-legend" class="trends-hourly-legend" style="display: none;">
+                  <span style="display:inline-flex; align-items:center; gap:4px;">
+                    <span style="width:10px; height:10px; background:rgba(22,163,74,0.25); border:1px solid rgba(22,163,74,0.5); border-radius:2px;"></span> Acceptable Range (60–100 bpm)
+                  </span>
+                  <span style="display:inline-flex; align-items:center; gap:4px;">
+                    <span style="width:12px; height:3px; background:#0284C7; border-radius:1px;"></span> HR Hourly Avg
+                  </span>
+                  <span style="display:inline-flex; align-items:center; gap:4px;">
+                    <span style="width:10px; height:10px; background:rgba(2,132,199,0.2); border:1px solid rgba(2,132,199,0.4); border-radius:2px;"></span> HR Hourly Range (Min–Max)
+                  </span>
+                  <span style="display:inline-flex; align-items:center; gap:4px;">
+                    <span style="width:12px; height:2px; background:#D97706; border-top:1px dashed #D97706;"></span> Respiration Rate (brpm)
+                  </span>
+                </div>
+              </div>
+
+              <div class="trends-chart-viewport" id="trends-chart-viewport">
+                <!-- View A: Daily Trends Matplotlib Image -->
+                <div class="trends-clinical-img-wrap" id="trends-view-daily-chart">
+                  <img id="trends-daily-chart-img" class="trends-clinical-img" alt="Daily vital sign trends" src="" />
+                  <div id="trends-daily-no-chart" style="display:none; color:#64748b; font-size:13px;">No daily trend chart available for this window.</div>
+                </div>
+                <!-- View B: Hourly Telemetry Canvas -->
+                <div class="trends-canvas-container" id="trends-view-hourly-chart" style="display: none;">
+                  <canvas id="trends-telemetry-canvas"></canvas>
+                  <div id="trends-hourly-tooltip" class="trends-tooltip"></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Episodes Drawer -->
+            <div class="trends-episodes-card">
+              <div class="trends-card-head">
+                <div class="trends-card-title" id="trends-episodes-title">Episodic Events (0)</div>
+                <div id="trends-progress-counter" style="font-size:12px; font-weight:600; color:#64748b">
+                  Reviewed: <span id="trends-rev-count">0</span> / <span id="trends-total-eps">0</span>
+                </div>
+              </div>
+              <div class="trends-episode-list" id="trends-episode-list"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ════════ 3. CLASSIC FULL REPORT VIEW (TOGGLED) ════════ -->
+        <div id="classic-report-view" style="display: none; flex: 1; overflow-y: auto;">
     <!-- ═══════════════════════════════════════════════════════════════ -->
-    <!-- CONTROLS PANEL                                                -->
+    <!-- REPORT ACTION SUB-BAR (Unified with Topbar Controls)         -->
     <!-- ═══════════════════════════════════════════════════════════════ -->
-    <section id="controls-panel" class="controls-panel">
-      <div class="controls-inner">
-        <div class="control-group">
-          <label for="client-select">Library</label>
-          <select id="client-select">
-            <option value="">Loading…</option>
-          </select>
+    <div class="report-action-subbar" id="report-action-subbar">
+      <div class="subbar-left">
+        <div class="subbar-patient-pill" id="subbar-patient-pill">
+          <span class="subbar-dot">●</span>
+          <span id="subbar-patient-label">Loading patient…</span>
+          <span class="subbar-window-tag" id="subbar-window-tag">Last 7 Days</span>
         </div>
-        <div class="control-group">
-          <label for="patient-select">Patient</label>
-          <select id="patient-select">
-            <option value="">Loading patients…</option>
-          </select>
-          <button id="btn-summary" class="btn-linklike" disabled title="24-hour triage summary of every patient in this library, critical first">
-            ☰ 24h Library Summary
-          </button>
-        </div>
-        <div class="control-group">
-          <label for="range-select">Time Window</label>
-          <select id="range-select">
-            <option value="last_24h">Last 24 Hours</option>
-            <option value="last_7d">Last 7 Days</option>
-            <option value="last_15d">Last 15 Days</option>
-            <option value="last_1m" selected>Last 1 Month</option>
-            <option value="last_3m">Last 3 Months</option>
-            <option value="custom">Custom Range</option>
-          </select>
-        </div>
-        <div
-          class="control-group custom-range"
-          id="custom-range"
-          style="display: none"
-        >
-          <label for="start-date">Start</label>
-          <input type="date" id="start-date" />
-        </div>
-        <div
-          class="control-group custom-range"
-          id="custom-range-end"
-          style="display: none"
-        >
-          <label for="end-date">End</label>
-          <input type="date" id="end-date" />
-        </div>
-        <div class="control-group ai-toggle-group">
-          <label for="ai-toggle">AI Analysis</label>
-          <label class="toggle-switch">
-            <input type="checkbox" id="ai-toggle">
-            <span class="slider"></span>
-          </label>
-        </div>
-        <div class="control-actions">
-          <button id="btn-smart-week" class="btn btn-smart" disabled title="Auto-detect the most clinically significant 7-day window">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-              <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
-            </svg>
-            Most Critical Week
-          </button>
-          <button id="btn-generate" class="btn btn-primary" disabled>
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              width="16"
-              height="16"
-            >
-              <path
-                d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"
-              />
-            </svg>
-            Generate Report
-          </button>
-          <button id="btn-download" class="btn btn-secondary" disabled>
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              width="16"
-              height="16"
-            >
-              <path
-                d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"
-              />
-            </svg>
-            Download PDF
-          </button>
-          <button id="btn-export-json" class="btn btn-ghost" disabled>
-            Export JSON
-          </button>
+        <div class="subbar-sensors" id="location-info">
+          <!-- Dynamically populated sensor badges -->
         </div>
       </div>
-    </section>
+      <div class="subbar-right">
+        <label class="toggle-switch-compact" title="Include AI-generated clinical narrative">
+          <input type="checkbox" id="ai-toggle">
+          <span class="toggle-slider"></span>
+          <span class="toggle-text">AI Narrative</span>
+        </label>
+        <button id="btn-download" class="btn btn-sm btn-primary" title="Download official PDF report">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13">
+            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+          </svg>
+          Download PDF
+        </button>
+        <button id="btn-export-json" class="btn btn-sm btn-ghost" title="Export report events as JSON">
+          Export JSON
+        </button>
+      </div>
+    </div>
 
     <!-- ═══════════════════════════════════════════════════════════════ -->
     <!-- LOADING STATE                                                 -->
@@ -154,37 +386,28 @@
     <!-- REPORT PREVIEW                                                -->
     <!-- ═══════════════════════════════════════════════════════════════ -->
     <main id="report-container" style="display: none">
-      <!-- HEADER -->
-      <section class="report-header" id="report-header">
-        <div class="header-left">
-          <h1 class="report-title">Clinical Intelligence Trend Report</h1>
-          <div class="header-meta">
-            <span id="meta-patient" class="meta-tag"
-              ><strong>Patient:</strong> —</span
-            >
-            <span class="meta-divider">|</span>
-            <span id="meta-period" class="meta-tag"
-              ><strong>Period:</strong> —</span
-            >
-            <span class="meta-divider">|</span>
-            <span id="meta-date" class="meta-tag"
-              ><strong>Report Date:</strong> —</span
-            >
-            <span class="meta-divider">|</span>
-            <span id="meta-resolution" class="meta-tag"
-              ><strong>Resolution:</strong> —</span
-            >
-            <span class="meta-divider">|</span>
-            <span id="meta-coverage" class="meta-tag"
-              ><strong>Coverage:</strong> —</span
-            >
-          </div>
-          <p class="disclaimer" id="disclaimer"></p>
+      <!-- 1. HEADER BAND -->
+      <section class="pdf-header-band">
+        <div class="pdf-title-box">
+          <span class="pdf-title-text">TREND REPORT</span>
         </div>
-        <div class="header-right">
-          <div class="triage-badge" id="triage-badge">GREEN</div>
-          <div class="priority-badge" id="priority-badge">LOW</div>
+        <div class="pdf-badge-box" id="pdf-badge-box">
+          <span class="pdf-badge-text" id="triage-badge">Routine monitoring</span>
         </div>
+      </section>
+
+      <!-- 2. SUBHEADER METADATA LINE -->
+      <section class="pdf-meta-bar" id="report-header">
+        <span id="meta-patient"><strong>Patient ID:</strong> —</span>
+        <span id="meta-period"><strong>Period:</strong> —</span>
+        <span id="meta-date"><strong>Report Date:</strong> —</span>
+        <span id="meta-coverage"><strong>Coverage:</strong> —</span>
+      </section>
+      <hr class="pdf-divider" />
+
+      <!-- 3. ACTION POSTURE BANNER (Why-flagged sentence) -->
+      <section class="pdf-action-banner" id="pdf-action-banner" style="display: none">
+        <p id="action-banner-text"></p>
       </section>
 
       <!-- QUALITY WARNINGS BANNER -->
@@ -193,237 +416,188 @@
         <div class="warning-text" id="warning-text"></div>
       </section>
 
-      <!-- 24-HOUR SNAPSHOT (leads the report, ahead of the 30-day strip) -->
-      <section class="report-card" id="section-snapshot" style="display: none">
-        <h2 class="section-title">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-            <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
-          </svg>
-          Last 24 Hours
+      <!-- 4. LAST 24 HOURS EPISODIC EVENTS (Split 2 Columns: HR & BR) -->
+      <section class="report-card pdf-l24-card" id="section-snapshot">
+        <h2 class="pdf-section-title">
+          Last 24 Hours <span class="pdf-blue-text">Episodic Events</span>
         </h2>
-        <!-- 24h color status banner (the 30-day tier lives in the header) -->
-        <div id="snapshot-banner" class="snapshot-banner" style="display: none"></div>
-        <div class="table-wrapper">
-          <table class="clinical-table">
-            <thead>
-              <tr><th>Vital Stat</th><th>Avg</th><th>Min</th><th>Max</th></tr>
-            </thead>
-            <tbody id="snapshot-tbody"></tbody>
-          </table>
+        <div class="pdf-l24-grid">
+          <!-- Heart Rate Column -->
+          <div class="pdf-l24-col hr-col">
+            <h3 class="pdf-l24-col-title hr-title">Heart rate</h3>
+            <div id="l24-hr-events" class="pdf-l24-events-list">No measured windows</div>
+            <div class="pdf-spread-box" id="l24-hr-spread">
+              Spread: — bpm
+            </div>
+          </div>
+          <!-- Breathing Column -->
+          <div class="pdf-l24-col rr-col">
+            <h3 class="pdf-l24-col-title rr-title">Breathing</h3>
+            <div id="l24-rr-events" class="pdf-l24-events-list">No measured windows</div>
+            <div class="pdf-spread-box" id="l24-rr-spread">
+              Spread: — brpm
+            </div>
+          </div>
         </div>
-        <p id="snapshot-note" class="no-data" style="display: none"></p>
-        <!-- one-line plain-language summary of the last 24h -->
-        <p id="snapshot-summary" class="snapshot-summary" style="display: none"></p>
-        <!-- episodic events within the last 24h (same style as the 30-day table) -->
-        <h3 class="subsection-title" id="snapshot-events-head" style="display: none">Episodic Events</h3>
-        <div class="table-wrapper" id="snapshot-events-wrap" style="display: none">
-          <table class="clinical-table" id="snapshot-events-table">
-            <thead>
-              <tr><th>Time Span</th><th>Duration</th><th>Episodes</th><th>Condition</th><th>Avg</th><th>Min</th><th>Max</th><th>Comment</th></tr>
-            </thead>
-            <tbody id="snapshot-events-tbody"></tbody>
-          </table>
-        </div>
-        <p id="snapshot-events-none" class="no-data" style="display: none">No episodic events in the last 24 hours.</p>
       </section>
 
-      <!-- STATUS TIMELINE -->
-      <section class="report-card phase-timeline" id="phase-timeline" style="display: none">
-        <h2 class="section-title">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
-          </svg>
-          Patient's Clinical Status Over the Period
-        </h2>
+      <!-- 5. STATUS TIMELINE / EPISODIC EVENTS PER DAY -->
+      <section class="report-card pdf-timeline-card" id="phase-timeline" style="display: none">
+        <div class="pdf-timeline-header">
+          <h2 class="pdf-section-title" id="timeline-heading">
+            Last N days <span class="pdf-blue-text">Episodic events</span>
+          </h2>
+        </div>
+        <!-- Episodic events per day bar chart -->
+        <img id="epd-chart-image" class="chart-image" alt="Episodic events per day" src="" style="display:none; width:100%; margin: 8px 0" />
         <div class="phases-container" id="phases-container"></div>
       </section>
 
-      <!-- SECTION 1: NARRATIVE -->
+      <!-- 6. NARRATIVE / SIGNAL SUMMARY -->
       <section class="report-card" id="section-narrative">
-        <h2 class="section-title">
-          <svg
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            width="18"
-            height="18"
-          >
-            <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
-            <path d="M14 2v6h6M16 13H8M16 17H8M10 9H8" />
-          </svg>
-          Clinical Intelligence: Signal Summary
-        </h2>
+        <h2 class="section-title"><span class="pdf-blue-text">Clinical Intelligence:</span> Signal Summary</h2>
         <p class="narrative-text" id="narrative-text"></p>
         <div class="actions-section" id="actions-section">
           <h3 class="actions-title">Suggested Clinical Review Actions</h3>
           <ul id="actions-list" class="actions-list"></ul>
         </div>
-        <div class="narrative-source-label" id="narrative-source-label" style="display:none"></div>
       </section>
 
-      <!-- SECTION 2: EPISODES TABLE -->
+      <!-- 7. MEASURED WINDOWS TABLE -->
       <section class="report-card" id="section-episodes">
-        <h2 class="section-title">
-          <svg
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            width="18"
-            height="18"
-          >
-            <path
-              d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"
-            />
-            <line x1="12" y1="9" x2="12" y2="13" />
-            <line x1="12" y1="17" x2="12.01" y2="17" />
-          </svg>
-          Episodic Events
-        </h2>
-        <div class="table-wrapper">
-          <table id="episodes-table" class="clinical-table">
-            <thead>
-              <tr>
-                <th>Date</th>
-                <th>Time Span</th>
-                <th>Duration</th>
-                <th>Episodes</th>
-                <th>Condition</th>
-                <th>Avg</th>
-                <th>Min</th>
-                <th>Max</th>
-                <th>Comment</th>
-              </tr>
-            </thead>
-            <tbody id="episodes-tbody"></tbody>
-          </table>
-        </div>
+        <h2 class="section-title"><span class="pdf-blue-text">Measured Windows</span></h2>
+        <div class="measured-windows-list" id="measured-windows-list"></div>
         <p id="no-episodes" class="no-data" style="display: none">
           No significant episodic events detected in the selected time window.
         </p>
       </section>
 
-      <!-- SECTION 3: STATS + CHART -->
-      <section class="report-card" id="section-context">
-        <h2 class="section-title">
-          <svg
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            width="18"
-            height="18"
-          >
-            <rect x="18" y="3" width="4" height="18" rx="2" />
-            <rect x="10" y="8" width="4" height="13" rx="2" />
-            <rect x="2" y="13" width="4" height="8" rx="2" />
-          </svg>
-          Heart Rate and Breathing Rate Statistics
-        </h2>
-        <div class="stats-panel">
-          <table class="stats-table" id="stats-table">
-            <thead>
-              <tr>
-                <th>Metric</th>
-                <th>Mean</th>
-                <th>Min</th>
-                <th>Max</th>
-                <th>P5</th>
-                <th>P95</th>
-              </tr>
-            </thead>
-            <tbody id="stats-tbody"></tbody>
-          </table>
-
-          <!-- NEW: Positional Stats (hidden for bed-only reports) -->
-          <div id="positional-section" style="display: none; margin-top: 24px">
-            <h3 class="stats-subtitle" style="font-size: 0.9rem; font-weight: 700; color: var(--brand-blue); margin-bottom: 8px">Positional Vital Sign Comparison</h3>
-            <table class="stats-table" id="positional-table">
-              <thead>
-                <tr>
-                  <th>Location</th>
-                  <th>Avg HR (bpm)</th>
-                  <th>Avg RR (breaths/min)</th>
-                  <th>Hours Recorded</th>
-                </tr>
-              </thead>
-              <tbody id="positional-tbody"></tbody>
-            </table>
-            <p id="positional-summary" class="caption" style="margin-top: 8px; font-style: italic; color: var(--text-muted); font-size: 0.8rem;"></p>
+      <!-- 8. SUMMARY STRIP & STAT TILES -->
+      <section class="pdf-summary-strip" id="section-context">
+        <div class="pdf-phase-banner" id="pdf-phase-banner" style="display: none"></div>
+        <div class="pdf-stat-tiles-grid">
+          <div class="pdf-stat-tile">
+            <span class="tile-val" id="tile-hr-range" style="color: #DC2626">—</span>
+            <span class="tile-label">Heart rate P5 to P95 (bpm)</span>
           </div>
-
-          <!-- NEW: Bed Activity Summary (shown for bed sensor reports) -->
-          <div id="bed-summary-section" style="display: none; margin-top: 24px">
-            <h3 class="stats-subtitle bed-summary-title">Bed Time Activity Summary</h3>
-            <table class="stats-table" id="bed-summary-table">
-              <thead>
-                <tr>
-                  <th>Metric</th>
-                  <th>Value</th>
-                </tr>
-              </thead>
-              <tbody id="bed-summary-tbody"></tbody>
-            </table>
+          <div class="pdf-stat-tile">
+            <span class="tile-val" id="tile-rr-range" style="color: #2563EB">—</span>
+            <span class="tile-label">Breathing P5 to P95 (brpm)</span>
+          </div>
+          <div class="pdf-stat-tile">
+            <span class="tile-val" id="tile-coverage" style="color: #1E3A5F">—</span>
+            <span class="tile-label">Coverage</span>
+          </div>
+          <div class="pdf-stat-tile">
+            <span class="tile-val" id="tile-windows" style="color: #1E3A5F">—</span>
+            <span class="tile-label">Measured windows</span>
           </div>
         </div>
       </section>
 
-      <!-- SECTION 4: CHARTS -->
-      <section class="report-card" id="section-charts">
-        <h2 class="section-title">
-          <svg
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            width="18"
-            height="18"
-          >
-            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
-          </svg>
-          Visual Trend Analysis
-        </h2>
+      <!-- ═══════════════════════════════════════════════════════════════ -->
+      <!-- PAGE 2: VISUAL TREND ANALYSIS                                 -->
+      <!-- ═══════════════════════════════════════════════════════════════ -->
+
+      <!-- 9. PAGE 2 HEADER -->
+      <section class="page2-header-bar" id="page2-header">
+        <span id="page2-meta"></span>
+      </section>
+
+      <!-- 10. DAILY TREND CHART (Candlestick) -->
+      <section class="report-card" id="section-daily-trend">
+        <h2 class="section-title"><span class="pdf-blue-text">Daily trend</span></h2>
         <div class="chart-panel">
-          <img
-            id="bed-hours-chart-image"
-            class="chart-image"
-            alt="Daily bed time activity chart"
-            src=""
-            style="display:none"
-          />
-          <img
-            id="chart-image"
-            class="chart-image"
-            alt="Daily vital sign trends"
-            src=""
-            style="display:none"
-          />
-          <img
-            id="histogram-image"
-            class="chart-image"
-            alt="HR/RR distribution histogram"
-            src=""
-            style="display:none; margin-top: 16px"
-          />
-          <img
-            id="positional-chart-image"
-            class="chart-image"
-            alt="Positional comparison chart"
-            src=""
-            style="display:none; margin-top: 16px"
-          />
-          <img
-            id="activity-chart-image"
-            class="chart-image"
-            alt="Activity trend chart"
-            src=""
-            style="display:none; margin-top: 16px"
-          />
+          <img id="chart-image" class="chart-image" alt="Daily vital sign trends" src="" style="display:none" />
         </div>
       </section>
 
-      <!-- SECTION 4: TREND ASSESSMENT -->
+      <!-- 11. DISTRIBUTION (Histogram) -->
+      <section class="report-card" id="section-distribution">
+        <h2 class="section-title"><span class="pdf-blue-text">Distribution</span></h2>
+        <div class="chart-panel">
+          <img id="histogram-image" class="chart-image" alt="HR/RR distribution histogram" src="" style="display:none" />
+        </div>
+      </section>
+
+      <!-- 12. POSITIONAL COMPARISON (multi-sensor) -->
+      <section class="report-card" id="positional-section" style="display: none">
+        <h2 class="section-title"><span class="pdf-blue-text">Positional Comparison</span></h2>
+        <div class="table-wrapper">
+          <table class="clinical-table" id="positional-table">
+            <thead>
+              <tr><th>Location</th><th>HR Avg (bpm)</th><th>RR Avg (brpm)</th><th>Hours</th></tr>
+            </thead>
+            <tbody id="positional-tbody"></tbody>
+          </table>
+        </div>
+        <p id="positional-summary" class="positional-summary-text"></p>
+        <div class="chart-panel">
+          <img id="positional-chart-image" class="chart-image" alt="Positional comparison chart" src="" style="display:none; margin-top: 12px" />
+        </div>
+      </section>
+
+      <!-- 13. BED SUMMARY (single-sensor bed) -->
+      <section class="report-card" id="bed-summary-section" style="display: none">
+        <h2 class="section-title"><span class="pdf-blue-text">Bed Activity Summary</span></h2>
+        <div class="table-wrapper">
+          <table class="clinical-table" id="bed-summary-table">
+            <thead>
+              <tr><th>Metric</th><th>Value</th></tr>
+            </thead>
+            <tbody id="bed-summary-tbody"></tbody>
+          </table>
+        </div>
+        <div class="chart-panel">
+          <img id="bed-hours-chart-image" class="chart-image" alt="Daily bed time activity chart" src="" style="display:none; margin-top: 12px" />
+        </div>
+      </section>
+
+      <!-- 14. DAILY MONITORING COVERAGE (Activity chart) -->
+      <section class="report-card" id="section-activity">
+        <h2 class="section-title"><span class="pdf-blue-text">Daily monitoring coverage</span></h2>
+        <div class="chart-panel">
+          <img id="activity-chart-image" class="chart-image" alt="Activity trend chart" src="" style="display:none" />
+        </div>
+      </section>
+
+      <!-- 15. CLINICAL MEASUREMENT THRESHOLDS LEGEND -->
+      <section class="report-card threshold-legend" id="section-thresholds">
+        <h2 class="section-title">Measurement thresholds</h2>
+        <div class="threshold-grid" id="threshold-grid">
+          <div class="threshold-row">
+            <div class="threshold-item">
+              <span class="threshold-swatch" style="background: #F4A08C"></span>
+              <span class="threshold-label"><strong>Low Heart Rate</strong> &lt; 50 bpm</span>
+            </div>
+            <div class="threshold-item">
+              <span class="threshold-swatch" style="background: #E5342B"></span>
+              <span class="threshold-label"><strong>High Heart Rate</strong> &gt; 100 bpm</span>
+            </div>
+            <div class="threshold-item">
+              <span class="threshold-swatch" style="background: #7F0B0B"></span>
+              <span class="threshold-label"><strong>Very High Heart Rate</strong> &gt; 120 bpm</span>
+            </div>
+          </div>
+          <div class="threshold-row">
+            <div class="threshold-item">
+              <span class="threshold-swatch" style="background: #9CC2EE"></span>
+              <span class="threshold-label"><strong>Low Breathing</strong> &lt; 10 brpm</span>
+            </div>
+            <div class="threshold-item">
+              <span class="threshold-swatch" style="background: #2E6FE0"></span>
+              <span class="threshold-label"><strong>Elevated Breathing</strong> &gt; 20 brpm</span>
+            </div>
+            <div class="threshold-item">
+              <span class="threshold-swatch" style="background: #0B2F73"></span>
+              <span class="threshold-label"><strong>High Breathing</strong> &gt; 26 brpm</span>
+            </div>
+          </div>
+        </div>
+        <p class="threshold-note">An "episodic event" or "measured window" is any period where at least one vital sign was outside the stated thresholds. Duration, frequency, and severity determine the clinical priority grade.</p>
+      </section>
+
+      <!-- TREND ASSESSMENT BAR -->
       <section class="trend-assessment-bar" id="section-trend">
         <div class="trend-left">
           <span class="trend-label">Trend Assessment:</span>
@@ -437,7 +611,7 @@
 
       <!-- FOOTER -->
       <footer class="report-footer" id="report-footer">
-        <span id="footer-quality"></span>
+        <span id="footer-quality">Measurement data only. Not a diagnosis. Values reflect selected windows where heart rate or breathing was outside stated ranges.</span>
         <span>Generated by CardioReport v1.0</span>
       </footer>
     </main>
@@ -451,6 +625,9 @@
           <h2 class="section-title" id="summary-title">24 Hour Patient Summary</h2>
           <div class="summary-head-right">
             <span class="summary-gen" id="summary-gen"></span>
+            <button id="btn-summary-back" class="btn btn-ghost" title="Return to active patient report">
+              ← Back to Report
+            </button>
             <button id="btn-summary-download" class="btn btn-secondary">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15">
                 <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/>
@@ -493,7 +670,14 @@
         </p>
       </div>
     </div>
+        </div><!-- close #classic-report-view -->
+      </div><!-- close #triage-main-viewport -->
+    </div><!-- close #app-layout -->
 
-    <script src="app.js?v=native5"></script>
+    <!-- Toast notification -->
+    <div id="triage-toast" class="triage-toast"></div>
+
+    <script src="app.js?v=unified6"></script>
+    <script src="triage.js?v=unified6"></script>
   </body>
 </html>

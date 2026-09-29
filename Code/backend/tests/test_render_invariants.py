@@ -4897,13 +4897,63 @@ if __name__ == "__main__":
         test_a2_hr_spread_single_source_byte_identical,
         test_a2_page1_spread_sentence_matches_helper,
         test_a3_activity_chart_single_coverage_legend,
+        test_mobile_pdf_generation,
+    ]
+
+
+def test_mobile_pdf_generation():
+    """Verify that generate_mobile_pdf generates a valid single-page PDF byte stream."""
+    from backend.models import ReportResponse, DataQuality, VitalStats
+    from backend.pdf_render import generate_mobile_pdf, generate_pdf
+
+    report = ReportResponse(
+        patient_id="MOBILE_TEST_01",
+        window_start="2026-05-01",
+        window_end="2026-07-31",
+        report_date="2026-08-01",
+        data_resolution="1 hour",
+        triage="GREEN",
+        trend_assessment="Stable",
+        overall_action_posture="Routine review",
+        narrative="Mobile test narrative.",
+        data_quality=DataQuality(low_confidence_hours=0, gap_hours=0, expected_hours=2000, total_hours=1800, quality_pct=90.0, coverage_pct=90.0),
+        hr_summaries=VitalStats(mean=72.0, min=55.0, max=102.0, p5=60.0, p95=90.0),
+        rr_summaries=VitalStats(mean=16.0, min=12.0, max=22.0, p5=14.0, p95=19.0),
+    )
+
+    pdf_bytes = generate_mobile_pdf(report)
+    assert pdf_bytes.startswith(b"%PDF"), "generate_mobile_pdf did not return a valid PDF"
+    assert len(pdf_bytes) > 500, "Mobile PDF byte stream abnormally small"
+
+    pdf_gen_bytes = generate_pdf(report, mobile=True)
+    assert pdf_gen_bytes.startswith(b"%PDF"), "generate_pdf(mobile=True) did not return a valid PDF"
+
+
+if __name__ == "__main__":
+    tests = [
+        test_r1_candlestick_has_all_days,
+        test_r2_triage_uses_strict_pre_ai_logic,
+        test_r3_disclaimer_must_be_present,
+        test_r4_narrative_has_required_structure,
+        test_r5_stats_table_order_and_bounds,
+        test_r6_episodes_chronological_and_bounded,
+        test_r7_phase_count_bounded,
+        test_r8_phase_labels_consistent,
+        test_r9_action_posture_severity_bound,
+        test_r10_pdf_generation_runs_without_error,
+        test_r11_data_resolution_present,
+        test_r12_coverage_summary_present,
+        test_r13_no_raw_dict_repr_in_narrative,
+        test_r14_no_forbidden_causal_language_in_narrative,
+        test_b1_table_shows_max_three_narrated_finding_rows,
+        test_b1_quiet_window_renders_single_fallback_line,
         test_b2_actions_escalate_by_severity_tier,
         test_b3_reduced_coverage_caveat_threshold_in_config,
-        # Follow-up: condition-aware action cap + truncated-findings appendix
         test_fu1_every_present_condition_retains_its_action,
         test_fu1_condition_floor_overrides_flat_cap,
         test_fu2_truncated_findings_preserve_full_record,
         test_fu2_quiet_patient_no_pointer_no_appendix,
+        test_mobile_pdf_generation,
     ]
 
     passed = 0
