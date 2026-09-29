@@ -784,7 +784,7 @@
     svgHtml += `
       <rect x="${padL}" y="${y100}" width="${plotW}" height="${y60 - y100}" 
             fill="rgba(16, 185, 129, 0.08)" stroke="rgba(16, 185, 129, 0.25)" stroke-dasharray="4 2" />
-      <text x="${width - padR - 6}" y="${y100 + 14}" font-size="9" fill="#10b981" font-weight="700" text-anchor="end">NORMAL CORRIDOR (60–100 BPM)</text>
+      <text x="${width - padR - 6}" y="${y100 + 14}" font-size="9" fill="#10b981" font-weight="700" text-anchor="end">ACCEPTABLE RANGE (60–100 BPM)</text>
     `;
 
     // Respiration corridor (12–20 brpm)
